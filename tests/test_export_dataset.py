@@ -23,6 +23,12 @@ def test_export_tum_writes_millimetre_depth_and_pose_columns(tmp_path: Path):
     values = (output / "groundtruth.txt").read_text().strip().split()
     assert len(values) == 8 and values[1:4] == ["1.000000000", "2.000000000", "3.000000000"]
     assert "d400_color_optical_frame" in (output / "sensors.yaml").read_text()
+    sensors = cv2.FileStorage(str(output / "sensors.yaml"), cv2.FILE_STORAGE_READ)
+    np.testing.assert_allclose(sensors.getNode("d400_color_optical_frame").getNode("intrinsics").mat(), [[10, 11, 3, 2]])
+    sensors.release()
+    transforms = cv2.FileStorage(str(output / "trans_matrix.yaml"), cv2.FILE_STORAGE_READ)
+    assert transforms.getNode("trans_matrix").size() == 2
+    transforms.release()
 
 
 def test_export_r3d_writes_cross_archive_contract(tmp_path: Path):

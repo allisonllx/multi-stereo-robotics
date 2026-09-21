@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from processing.trajectory import camera_b_world_pose, fit_planar_rigid_alignment, geodetic_to_enu
+from processing.trajectory import align_phone_worlds, camera_b_world_pose, fit_planar_rigid_alignment, geodetic_to_enu
 
 
 def test_camera_b_pose_uses_inverse_of_a_to_b_extrinsic():
@@ -27,3 +27,15 @@ def test_fit_planar_rigid_alignment_recovers_rotation_and_translation():
     np.testing.assert_allclose(fit.rotation, R, atol=1e-10)
     np.testing.assert_allclose(fit.translation, t, atol=1e-10)
     assert fit.rmse_m < 1e-10
+
+
+def test_align_phone_worlds_recovers_constant_world_transform():
+    a_to_b = np.eye(4); a_to_b[0, 3] = 0.2
+    world_a = []
+    for x in [0.0, 1.0, 2.0]:
+        pose = np.eye(4); pose[2, 3] = x; world_a.append(pose)
+    b_world_to_a_world = np.eye(4); b_world_to_a_world[:3, 3] = [4, 0, -3]
+    world_b = [np.linalg.inv(b_world_to_a_world) @ camera_b_world_pose(pose, a_to_b) for pose in world_a]
+    result = align_phone_worlds(world_a, world_b, a_to_b)
+    np.testing.assert_allclose(result.b_world_to_a_world, b_world_to_a_world, atol=1e-10)
+    assert result.translation_rmse_m < 1e-10

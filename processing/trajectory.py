@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from processing.session import associate_nearest, load_frames, load_numeric_csv
+from calibration.common import as_matrix, load_yaml
+from calibration.pair_frames import load_pairs_csv
 
 
 @dataclass(frozen=True)
@@ -16,9 +20,35 @@ class PlanarAlignment:
     rmse_m: float
 
 
+@dataclass(frozen=True)
+class PhoneWorldAlignment:
+    b_world_to_a_world: np.ndarray
+    translation_rmse_m: float
+    rotation_rmse_deg: float
+
+
 def camera_b_world_pose(world_from_a: np.ndarray, a_to_b: np.ndarray) -> np.ndarray:
     """Predict Camera B camera-to-world from Camera A and X_B=T_B_A X_A."""
     return np.asarray(world_from_a, dtype=np.float64) @ np.linalg.inv(np.asarray(a_to_b, dtype=np.float64))
+
+
+def align_phone_worlds(world_from_a_poses, world_from_b_poses, a_to_b: np.ndarray) -> PhoneWorldAlignment:
+    if len(world_from_a_poses) != len(world_from_b_poses) or not world_from_a_poses:
+        raise ValueError("paired A and B pose lists must have equal non-zero length")
+    candidates = []
+    for pose_a, pose_b in zip(world_from_a_poses, world_from_b_poses):
+        expected_b_in_a_world = camera_b_world_pose(pose_a, a_to_b)
+        candidates.append(expected_b_in_a_world @ np.linalg.inv(np.asarray(pose_b, dtype=np.float64)))
+    rotations = Rotation.from_matrix(np.asarray([value[:3, :3] for value in candidates]))
+    mean_rotation = rotations.mean()
+    translation = np.mean([value[:3, 3] for value in candidates], axis=0)
+    transform = np.eye(4); transform[:3, :3] = mean_rotation.as_matrix(); transform[:3, 3] = translation
+    translation_errors, rotation_errors = [], []
+    for candidate in candidates:
+        delta = np.linalg.inv(transform) @ candidate
+        translation_errors.append(np.linalg.norm(delta[:3, 3]))
+        rotation_errors.append(Rotation.from_matrix(delta[:3, :3]).magnitude())
+    return PhoneWorldAlignment(transform, float(np.sqrt(np.mean(np.square(translation_errors)))), float(np.rad2deg(np.sqrt(np.mean(np.square(rotation_errors))))))
 
 
 def _geodetic_to_ecef(lat_deg, lon_deg, altitude_m):
@@ -82,3 +112,23 @@ def align_session_to_gps(session_dir: str | Path, output_csv: str | Path,
         for frame, xy in zip(frames, aligned): writer.writerow([frame.frame_id, frame.timestamp_s, xy[0], xy[1], frame.camera_to_world[1, 3]])
     return {"frames": len(frames), "gps_matches": int(valid.sum()), "alignment_rmse_m": fit.rmse_m,
             "rotation_2x2": fit.rotation.tolist(), "translation_en_m": fit.translation.tolist()}
+
+
+def align_pair_trajectories(session_a: str | Path, session_b: str | Path,
+                            pairs_csv: str | Path, stereo_yaml: str | Path,
+                            output_csv: str | Path) -> dict:
+    frames_a, frames_b = load_frames(session_a), load_frames(session_b)
+    pairs = load_pairs_csv(pairs_csv); stereo = load_yaml(stereo_yaml)
+    a_to_b = np.eye(4); a_to_b[:3, :3] = as_matrix(stereo["R"]); a_to_b[:3, 3] = as_matrix(stereo["T"]).reshape(3)
+    poses_a = [frames_a[p.frame_a].camera_to_world for p in pairs]
+    poses_b = [frames_b[p.frame_b].camera_to_world for p in pairs]
+    fit = align_phone_worlds(poses_a, poses_b, a_to_b)
+    output = Path(output_csv); output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle); writer.writerow(["frame_id", "timestamp_s"] + [f"pose_m{r}{c}" for r in range(4) for c in range(4)])
+        for frame in frames_b:
+            pose = fit.b_world_to_a_world @ frame.camera_to_world
+            writer.writerow([frame.frame_id, frame.timestamp_s] + pose.reshape(-1).tolist())
+    report = {"paired_poses": len(pairs), "b_world_to_a_world": fit.b_world_to_a_world.tolist(), "translation_rmse_m": fit.translation_rmse_m, "rotation_rmse_deg": fit.rotation_rmse_deg}
+    output.with_suffix(".json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return report

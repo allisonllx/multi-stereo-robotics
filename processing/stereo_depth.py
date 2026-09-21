@@ -39,6 +39,18 @@ def evaluate_depth(estimate: np.ndarray, reference: np.ndarray, valid_mask: np.n
     }
 
 
+def rectify_aligned_map(source: np.ndarray, map_x: np.ndarray, map_y: np.ndarray,
+                        rgb_size: tuple[int, int], interpolation: int | None = None) -> np.ndarray:
+    """Warp an RGB-aligned lower-resolution map into the rectified RGB plane."""
+    cv = require_cv2()
+    source = np.asarray(source)
+    rgb_width, rgb_height = rgb_size
+    scaled_x = np.asarray(map_x, np.float32) * (source.shape[1] / float(rgb_width))
+    scaled_y = np.asarray(map_y, np.float32) * (source.shape[0] / float(rgb_height))
+    mode = cv.INTER_NEAREST if interpolation is None else interpolation
+    return cv.remap(source, scaled_x, scaled_y, mode, borderMode=cv.BORDER_CONSTANT, borderValue=0)
+
+
 def compute_disparity(left: np.ndarray, right: np.ndarray, num_disparities: int = 128, block_size: int = 5) -> np.ndarray:
     cv = require_cv2()
     if num_disparities <= 0 or num_disparities % 16:
@@ -70,7 +82,7 @@ def process_sequence(session_a: str | Path, session_b: str | Path, pairs_csv: st
     rect = stereo_rectify_maps(K_a, d_a, K_b, d_b, size, R, T)
     focal, baseline = float(rect["P1"][0, 0]), float(np.linalg.norm(T))
     output = Path(output_dir); output.mkdir(parents=True, exist_ok=True)
-    (output / "depth").mkdir(exist_ok=True); (output / "disparity").mkdir(exist_ok=True)
+    (output / "depth").mkdir(exist_ok=True); (output / "disparity").mkdir(exist_ok=True); (output / "rgb").mkdir(exist_ok=True)
     frame_metrics = []
     selected = pairs if max_pairs is None else pairs[:max_pairs]
     for pair in selected:
@@ -85,15 +97,18 @@ def process_sequence(session_a: str | Path, session_b: str | Path, pairs_csv: st
         stem = f"{pair.frame_a:06d}"
         np.save(output / "depth" / f"{stem}.npy", depth)
         np.save(output / "disparity" / f"{stem}.npy", disparity)
+        if not cv.imwrite(str(output / "rgb" / f"{stem}.jpg"), left_r):
+            raise RuntimeError(f"failed to write rectified RGB frame {stem}")
         metric = {"frame_A": pair.frame_a, "frame_B": pair.frame_b, "timestamp_s": pair.timestamp_a}
         row = fa.values
         if row.get("depth_path"):
             lidar = decode_padded_buffer(Path(session_a) / row["depth_path"], int(row["depth_width"]), int(row["depth_height"]), int(row["depth_bytes_per_row"]), np.float32)
-            estimate_small = cv.resize(depth, (lidar.shape[1], lidar.shape[0]), interpolation=cv.INTER_NEAREST)
+            lidar_rect = rectify_aligned_map(lidar, rect["map1_a"], rect["map2_a"], size)
             confidence = None
             if row.get("confidence_path"):
-                confidence = decode_padded_buffer(Path(session_a) / row["confidence_path"], int(row["confidence_width"]), int(row["confidence_height"]), int(row["confidence_bytes_per_row"]), np.uint8) == 2
-            metric.update(evaluate_depth(estimate_small, lidar, confidence))
+                confidence_raw = decode_padded_buffer(Path(session_a) / row["confidence_path"], int(row["confidence_width"]), int(row["confidence_height"]), int(row["confidence_bytes_per_row"]), np.uint8)
+                confidence = rectify_aligned_map(confidence_raw, rect["map1_a"], rect["map2_a"], size) == 2
+            metric.update(evaluate_depth(depth, lidar_rect, confidence))
         frame_metrics.append(metric)
     valid = [m for m in frame_metrics if m.get("mae_m") is not None]
     report = {
@@ -103,4 +118,6 @@ def process_sequence(session_a: str | Path, session_b: str | Path, pairs_csv: st
         "frames": frame_metrics,
     }
     (output / "depth_evaluation.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    metadata = {"image_width": size[0], "image_height": size[1], "rectified_intrinsics": np.asarray(rect["P1"][:3, :3]).tolist(), "frames": frame_metrics}
+    (output / "stereo_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return report

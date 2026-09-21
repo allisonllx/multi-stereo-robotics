@@ -229,3 +229,49 @@ Diagnostic targets, not guarantees:
 - Held-out epipolar or rectified vertical error ≲ 1 px
 - Triangulated ChArUco square length close to `square_length_m`
 - `‖T‖` close to `measured_baseline_m` if you set it
+
+## Offline depth, trajectory, and dataset processing
+
+After importing and synchronizing the two sessions and completing calibration,
+run the combined offline stage:
+
+```bash
+python -m processing all \
+  --session-a /path/to/session_A \
+  --session-b /path/to/session_B \
+  --pairs calibration/outputs/synchronization.csv \
+  --stereo calibration/outputs/stereo_extrinsics.yaml \
+  --output processing/outputs/walk_001
+```
+
+This writes StereoSGBM depth (`stereo/depth/*.npy`), per-frame and aggregate
+LiDAR comparison metrics, a GPS-aligned Camera A trajectory in local ENU metres,
+and a TUM/OpenLORIS-style dataset plus a voxel-downsampled coloured `map.ply`.
+Run stages independently with:
+
+```bash
+python -m processing stereo-depth --help
+python -m processing trajectory --help
+python -m processing export-tum --help
+python -m processing export-r3d --help
+python -m processing map --help
+```
+
+R3D export requires `lzfse`, included in `requirements.txt`. Its archive follows
+the CROSS loader's exact `metadata` plus `rgbd/{i}.jpg/.depth/.conf` contract.
+CROSS currently reconstructs R3D timestamps as `index / fps`, so use the TUM
+export when retaining irregular real timestamps is important.
+
+Coordinate conventions:
+
+- ARKit poses are camera-to-world transforms with metres.
+- Stereo calibration stores `X_B = R X_A + T`.
+- Camera A is the rig reference.
+- GPS is converted to local East-North-Up and fitted to ARKit's horizontal
+  `(x, -z)` path with rotation and translation only—no scale correction.
+- Compass remains an observed prior; it is not averaged directly into ARKit.
+
+`map.ply` is direct RGB-D fusion using the recorded ARKit poses and voxel
+downsampling. It does not perform place recognition or pose-graph loop closure;
+those require a separate SLAM backend and should only be added after evaluating
+the ARKit trajectory drift on the first indoor/outdoor loop captures.

@@ -84,3 +84,31 @@ def load_numeric_csv(path: str | Path) -> tuple[list[str], np.ndarray]:
         names = list(reader.fieldnames or [])
         data = [[float(row[name]) for name in names] for row in reader]
     return names, np.asarray(data, dtype=np.float64)
+
+
+def write_frame_sensor_associations(session_dir: str | Path, output_csv: str | Path,
+                                    max_location_age_s: float = 2.0,
+                                    max_heading_age_s: float = 0.5) -> Path:
+    root = Path(session_dir); frames = load_frames(root)
+    streams = []
+    for prefix, filename, max_age in (("gps", "location.csv", max_location_age_s), ("heading", "heading.csv", max_heading_age_s)):
+        names, values = load_numeric_csv(root / filename)
+        if "unix_time_s" not in names: raise ValueError(f"{filename} has no unix_time_s column")
+        streams.append((prefix, names, values, associate_nearest(
+            np.array([float(f.values["unix_time_s"]) for f in frames]),
+            values[:, names.index("unix_time_s")], max_age)))
+    fieldnames = ["frame_id", "timestamp_s", "unix_time_s"]
+    for prefix, names, _values, _association in streams:
+        fieldnames += [f"{prefix}_age_s"] + [f"{prefix}_{name}" for name in names if name != "unix_time_s"]
+    output = Path(output_csv); output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames); writer.writeheader()
+        for index, frame in enumerate(frames):
+            row = {"frame_id": frame.frame_id, "timestamp_s": frame.timestamp_s, "unix_time_s": frame.values["unix_time_s"]}
+            for prefix, names, values, association in streams:
+                sample_index = association.indices[index]
+                row[f"{prefix}_age_s"] = "" if sample_index < 0 else abs(float(association.delta_s[index]))
+                for name in names:
+                    if name != "unix_time_s": row[f"{prefix}_{name}"] = "" if sample_index < 0 else values[sample_index, names.index(name)]
+            writer.writerow(row)
+    return output
