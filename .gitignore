@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+.DS_Store
+
+# Raw camera captures and other local input data.
+data/*
+!data/.gitkeep
+
+# Generated calibration artifacts and reports.
+calibration/outputs/*
+!calibration/outputs/.gitkeep
+calibration/*.docx
+
+# Temporary media exports.
+*.wav
+*.mp4
+*.[mM][oO][vV]
+!tests/fixtures/**
+
+# Local code-intelligence index.
+codedb.snapshot

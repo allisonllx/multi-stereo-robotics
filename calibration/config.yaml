@@ -1,0 +1,56 @@
+# Two-phone rigid stereo calibration.
+# Edit the video paths and ChArUco geometry before running the pipeline.
+#
+#   python -m calibration timestamps
+#   python -m calibration sync
+#   python -m calibration pair
+#   python -m calibration detect
+#   python -m calibration intrinsics
+#   python -m calibration stereo
+#   python -m calibration verify
+
+cameras:
+  A:
+    video: data/IMG_0119.MOV
+    # Optional dedicated intrinsic stills or video. If omitted, the stereo video is used.
+    intrinsics_source: data/IMG_0119.MOV
+  B:
+    video: data/IMG_1167.MOV
+    intrinsics_source: data/IMG_1167.MOV
+
+recording:
+  expected_fps: 30
+  resolution: [1920, 1080]
+  notes: >
+    Lock resolution, FPS, lens, focus, exposure and white balance.
+    Do not move either phone after extrinsic calibration.
+
+charuco:
+  squares_x: 7
+  squares_y: 5
+  square_length_m: 0.0345
+  marker_length_m: 0.025875
+  dictionary: DICT_6X6_50
+  orientation: "origin at the top-left square when the board is viewed in landscape"
+
+sync:
+  clap_window_s: 8.0
+  drift_threshold_ms: 5.0
+  audio_sample_rate: 48000
+  max_pair_residual_ms: 33.3
+
+calibration:
+  min_corners: 8
+  min_views: 8
+  max_view_error_px: 2.0
+  detect_stride: 1
+  # Keep at most one stereo pose per this many seconds (hold-still trick).
+  pose_interval_s: 0.8
+
+verification:
+  holdout_fraction: 0.2
+  # Tape-measure baseline between the two camera optical centres, metres.
+  measured_baseline_m: 0.2152
+
+paths:
+  outputs: calibration/outputs
