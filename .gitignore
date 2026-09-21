@@ -23,6 +23,7 @@ calibration/*.docx
 
 # Local code-intelligence index.
 codedb.snapshot
+.worktrees/
 
 # Xcode per-user settings and build products.
 ios/DerivedData/
