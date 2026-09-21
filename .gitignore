@@ -23,3 +23,9 @@ calibration/*.docx
 
 # Local code-intelligence index.
 codedb.snapshot
+
+# Xcode per-user settings and build products.
+ios/DerivedData/
+ios/build/
+*.xcuserstate
+xcuserdata/

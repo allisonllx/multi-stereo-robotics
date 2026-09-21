@@ -94,7 +94,8 @@ def _iter_images_from_dir(directory: Path):
         image = cv.imread(str(path), cv.IMREAD_COLOR)
         if image is None:
             continue
-        yield path.name, None, image
+        frame_id = int(path.stem) if path.stem.isdigit() else path.name
+        yield frame_id, None, image
 
 
 def _iter_frames_from_video(video_path: Path, stride: int):

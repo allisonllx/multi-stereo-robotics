@@ -8,11 +8,13 @@ from calibration.calibrate_intrinsics import main as intrinsics_main
 from calibration.calibrate_stereo import main as stereo_main
 from calibration.detect_charuco import main as detect_main
 from calibration.extract_timestamps import main as timestamps_main
+from calibration.import_session import main as import_session_main
 from calibration.pair_frames import main as pair_main
 from calibration.synchronize_audio import main as sync_main
 from calibration.verify_calibration import main as verify_main
 
 COMMANDS = {
+    "import-session": (import_session_main, "Validate an ARKit recording and import timestamps"),
     "timestamps": (timestamps_main, "Extract per-frame presentation timestamps"),
     "sync": (sync_main, "Cross-correlate clap audio and fit t_A = a t_B + b"),
     "pair": (pair_main, "Pair Camera B frames to the nearest Camera A frame"),
@@ -31,6 +33,7 @@ def _print_root_help() -> None:
     print("Two-phone rigid stereo synchronization and calibration")
     print()
     print("commands:")
+    print(f"  {'import-session':<12} {COMMANDS['import-session'][1]}")
     print("  all          Run the full pipeline in order")
     for name in ORDER:
         print(f"  {name:<12} {COMMANDS[name][1]}")

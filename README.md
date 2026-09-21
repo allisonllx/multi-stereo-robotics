@@ -31,6 +31,51 @@ python -m calibration --help
 python -m pytest tests -q
 ```
 
+## ARKit recorder (iPhone 17 Pro + iPhone 15)
+
+The native recorder is in [`ios/StereoCapture.xcodeproj`](ios/StereoCapture.xcodeproj).
+Open it in Xcode, select your Personal Team in Signing & Capabilities, and run
+the same build on both phones. Use one shared session ID and assign rig roles A
+and B. The app records all streams during one Start/Stop run:
+
+- RGB, ARKit pose and per-frame intrinsics at a selectable 5, 10, or 15 saved frames/s
+- LiDAR scene depth and confidence on supported phones
+- GPS and compass samples at their native, irregular update rates
+- one continuous 48 kHz audio track for clap synchronization
+
+ARKit continues tracking at a supported native 30 fps even when images are
+saved at 10 fps. Both phones request the same manual profile: 1/120-second
+exposure, ISO 100, 5000 K white balance, and lens position 0.75. The achieved
+values are stored on every frame because different camera modules can clamp or
+interpret the same request differently. After stopping, export each session folder to the Mac. Import
+the pair together so their session IDs and rig roles are checked:
+
+```bash
+python -m calibration import-session /path/to/session_A /path/to/session_B
+```
+
+This writes `timestamps_A.csv`, `timestamps_B.csv`, and a validation report for
+each phone under `calibration/outputs/`. The frame timestamps share the audio
+timeline, so the existing clap synchronizer can operate directly on the two
+exported audio files:
+
+```bash
+python -m calibration sync \
+  --video-a /path/to/session_A/audio.m4a \
+  --video-b /path/to/session_B/audio.m4a
+python -m calibration pair
+python -m calibration detect --camera A --source /path/to/session_A/rgb
+python -m calibration detect --camera B --source /path/to/session_B/rgb
+python -m calibration intrinsics
+python -m calibration stereo
+python -m calibration verify
+```
+
+For intrinsic calibration from these image folders, set each camera's
+`intrinsics_source` in `calibration/config.yaml` to its exported `rgb/` folder.
+Do not run `timestamps` after importing an ARKit session; it would try to treat
+the image folders as video and replace the imported timestamps.
+
 `opencv-contrib-python` and `opencv-python` cannot sit in the same environment. If `cv2.aruco` is missing, uninstall both and reinstall only `opencv-contrib-python`.
 
 ## Capture (before you feed anything in)

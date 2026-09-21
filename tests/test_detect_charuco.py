@@ -17,6 +17,25 @@ from calibration.detect_charuco import (
 )
 
 
+def test_image_directory_uses_numeric_filename_stem_as_frame_id(tmp_path, monkeypatch):
+    import calibration.detect_charuco as module
+
+    class FakeCV:
+        IMREAD_COLOR = 1
+
+        @staticmethod
+        def imread(path, _mode):
+            return np.zeros((4, 5, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(module, "require_cv2", lambda: FakeCV)
+    (tmp_path / "000012.jpg").write_bytes(b"x")
+
+    frame_id, timestamp, _image = next(module._iter_images_from_dir(tmp_path))
+
+    assert frame_id == 12
+    assert timestamp is None
+
+
 def _board_config() -> dict:
     return {
         "charuco": {
