@@ -10,6 +10,35 @@ from processing.session import load_frames
 from processing.trajectory import apply_world_transform, world_from_rectified_camera
 
 
+class VoxelAccumulator:
+    """Incremental voxel means with memory proportional to occupied voxels."""
+
+    def __init__(self, voxel_size_m: float):
+        if voxel_size_m <= 0: raise ValueError("voxel_size_m must be positive")
+        self.voxel_size_m = float(voxel_size_m)
+        self._voxels: dict[tuple[int, int, int], tuple[np.ndarray, np.ndarray, int]] = {}
+
+    def add(self, points: np.ndarray, colours: np.ndarray) -> None:
+        points, colours = np.asarray(points, dtype=np.float64), np.asarray(colours, dtype=np.float64)
+        if len(points) == 0: return
+        keys = np.floor(points / self.voxel_size_m).astype(np.int64)
+        unique, inverse = np.unique(keys, axis=0, return_inverse=True)
+        for index, key_array in enumerate(unique):
+            mask = inverse == index; key = tuple(int(value) for value in key_array)
+            point_sum, colour_sum, count = points[mask].sum(axis=0), colours[mask].sum(axis=0), int(mask.sum())
+            if key in self._voxels:
+                old_points, old_colours, old_count = self._voxels[key]
+                point_sum += old_points; colour_sum += old_colours; count += old_count
+            self._voxels[key] = (point_sum, colour_sum, count)
+
+    def result(self) -> tuple[np.ndarray, np.ndarray]:
+        items = sorted(self._voxels.items())
+        if not items: return np.empty((0, 3)), np.empty((0, 3), dtype=np.uint8)
+        points = np.asarray([value[0] / value[2] for _key, value in items])
+        colours = np.asarray([value[1] / value[2] for _key, value in items]).round().astype(np.uint8)
+        return points, colours
+
+
 def backproject_depth(depth_m: np.ndarray, intrinsics: np.ndarray, camera_to_world: np.ndarray,
                       pixel_stride: int = 1, max_depth_m: float = 20.0) -> tuple[np.ndarray, np.ndarray]:
     depth = np.asarray(depth_m, dtype=np.float64); K = np.asarray(intrinsics, dtype=np.float64)
@@ -53,7 +82,7 @@ def build_coloured_map(session_dir: str | Path, processed_dir: str | Path, outpu
     frames = load_frames(session); metadata = json.loads((processed / "stereo_metadata.json").read_text(encoding="utf-8"))
     K = np.asarray(metadata["rectified_intrinsics"], dtype=np.float64)
     R1 = np.asarray(metadata["rectification_R1"], dtype=np.float64)
-    all_points, all_colours, used = [], [], 0
+    accumulator, used = VoxelAccumulator(voxel_size_m), 0
     for frame in frames[::frame_stride]:
         depth_path, image_path = processed / "depth" / f"{frame.frame_id:06d}.npy", processed / "rgb" / f"{frame.frame_id:06d}.jpg"
         if not depth_path.is_file() or not image_path.is_file(): continue
@@ -61,8 +90,8 @@ def build_coloured_map(session_dir: str | Path, processed_dir: str | Path, outpu
         rectified_pose = apply_world_transform(world_from_rectified_camera(frame.camera_to_world, R1), world_transform)
         points, pixels = backproject_depth(depth, K, rectified_pose, pixel_stride, max_depth_m)
         colours = image[pixels[:, 0], pixels[:, 1], ::-1]
-        all_points.append(points); all_colours.append(colours); used += 1
-    if not all_points: raise ValueError("no matching rectified RGB/depth frames found")
-    points, colours = voxel_downsample(np.vstack(all_points), np.vstack(all_colours), voxel_size_m)
+        accumulator.add(points, colours); used += 1
+    if used == 0: raise ValueError("no matching rectified RGB/depth frames found")
+    points, colours = accumulator.result()
     write_ply(output_ply, points, colours)
     return {"frames_used": used, "points": len(points), "voxel_size_m": voxel_size_m, "output": str(output_ply)}

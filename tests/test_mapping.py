@@ -1,6 +1,6 @@
 import numpy as np
 
-from processing.mapping import backproject_depth, voxel_downsample
+from processing.mapping import VoxelAccumulator, backproject_depth, voxel_downsample
 
 
 def test_backproject_depth_uses_intrinsics_and_camera_to_world():
@@ -19,3 +19,14 @@ def test_voxel_downsample_averages_points_and_colours():
     p, c = voxel_downsample(points, colours, voxel_size_m=0.1)
     np.testing.assert_allclose(p[0], [0.015, 0, 0])
     np.testing.assert_array_equal(c[0], [20, 30, 40])
+
+
+def test_voxel_accumulator_matches_single_batch_downsample():
+    points = np.array([[0.01, 0, 0], [0.02, 0, 0], [1, 0, 0]])
+    colours = np.array([[10, 20, 30], [30, 40, 50], [100, 110, 120]], dtype=np.uint8)
+    accumulator = VoxelAccumulator(0.1)
+    accumulator.add(points[:1], colours[:1]); accumulator.add(points[1:], colours[1:])
+    actual_points, actual_colours = accumulator.result()
+    expected_points, expected_colours = voxel_downsample(points, colours, 0.1)
+    np.testing.assert_allclose(actual_points, expected_points)
+    np.testing.assert_array_equal(actual_colours, expected_colours)
