@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from processing.trajectory import align_phone_worlds, camera_b_world_pose, fit_planar_rigid_alignment, geodetic_to_enu
+from processing.trajectory import align_phone_worlds, camera_b_world_pose, fit_planar_rigid_alignment, geodetic_to_enu, opencv_extrinsic_to_arkit, world_from_rectified_camera
 
 
 def test_camera_b_pose_uses_inverse_of_a_to_b_extrinsic():
@@ -39,3 +39,17 @@ def test_align_phone_worlds_recovers_constant_world_transform():
     result = align_phone_worlds(world_a, world_b, a_to_b)
     np.testing.assert_allclose(result.b_world_to_a_world, b_world_to_a_world, atol=1e-10)
     assert result.translation_rmse_m < 1e-10
+
+
+def test_opencv_extrinsic_is_conjugated_into_arkit_camera_axes():
+    transform = np.eye(4); transform[:3, 3] = [1, 2, 3]
+    converted = opencv_extrinsic_to_arkit(transform)
+    np.testing.assert_allclose(converted[:3, 3], [1, -2, -3])
+
+
+def test_rectified_camera_pose_includes_rectification_rotation():
+    world_from_camera = np.eye(4)
+    rectification = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=float)
+    result = world_from_rectified_camera(world_from_camera, rectification)
+    axes = np.diag([1.0, -1.0, -1.0])
+    np.testing.assert_allclose(result[:3, :3], axes @ rectification.T @ axes)

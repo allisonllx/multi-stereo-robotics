@@ -12,6 +12,8 @@ from processing.session import associate_nearest, load_frames, load_numeric_csv
 from calibration.common import as_matrix, load_yaml
 from calibration.pair_frames import load_pairs_csv
 
+OPENCV_TO_ARKIT = np.diag([1.0, -1.0, -1.0, 1.0])
+
 
 @dataclass(frozen=True)
 class PlanarAlignment:
@@ -30,6 +32,19 @@ class PhoneWorldAlignment:
 def camera_b_world_pose(world_from_a: np.ndarray, a_to_b: np.ndarray) -> np.ndarray:
     """Predict Camera B camera-to-world from Camera A and X_B=T_B_A X_A."""
     return np.asarray(world_from_a, dtype=np.float64) @ np.linalg.inv(np.asarray(a_to_b, dtype=np.float64))
+
+
+def opencv_extrinsic_to_arkit(transform: np.ndarray) -> np.ndarray:
+    """Convert a camera-to-camera transform from OpenCV to ARKit camera axes."""
+    return OPENCV_TO_ARKIT @ np.asarray(transform, dtype=np.float64) @ OPENCV_TO_ARKIT
+
+
+def world_from_rectified_camera(world_from_original: np.ndarray, rectification_cv: np.ndarray) -> np.ndarray:
+    """Return the ARKit camera-to-world pose for an OpenCV-rectified image."""
+    rectified_to_original_cv = np.eye(4)
+    rectified_to_original_cv[:3, :3] = np.asarray(rectification_cv, dtype=np.float64).T
+    rectified_to_original_arkit = opencv_extrinsic_to_arkit(rectified_to_original_cv)
+    return np.asarray(world_from_original, dtype=np.float64) @ rectified_to_original_arkit
 
 
 def align_phone_worlds(world_from_a_poses, world_from_b_poses, a_to_b: np.ndarray) -> PhoneWorldAlignment:
@@ -119,7 +134,8 @@ def align_pair_trajectories(session_a: str | Path, session_b: str | Path,
                             output_csv: str | Path) -> dict:
     frames_a, frames_b = load_frames(session_a), load_frames(session_b)
     pairs = load_pairs_csv(pairs_csv); stereo = load_yaml(stereo_yaml)
-    a_to_b = np.eye(4); a_to_b[:3, :3] = as_matrix(stereo["R"]); a_to_b[:3, 3] = as_matrix(stereo["T"]).reshape(3)
+    a_to_b_cv = np.eye(4); a_to_b_cv[:3, :3] = as_matrix(stereo["R"]); a_to_b_cv[:3, 3] = as_matrix(stereo["T"]).reshape(3)
+    a_to_b = opencv_extrinsic_to_arkit(a_to_b_cv)
     poses_a = [frames_a[p.frame_a].camera_to_world for p in pairs]
     poses_b = [frames_b[p.frame_b].camera_to_world for p in pairs]
     fit = align_phone_worlds(poses_a, poses_b, a_to_b)

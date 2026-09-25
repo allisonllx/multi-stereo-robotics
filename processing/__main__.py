@@ -11,6 +11,7 @@ from processing.mapping import build_coloured_map
 from processing.session import decode_padded_buffer, load_frames, write_frame_sensor_associations
 from processing.stereo_depth import process_sequence
 from processing.trajectory import align_pair_trajectories, align_session_to_gps
+from processing.trajectory import world_from_rectified_camera
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,7 +57,8 @@ def _dataset_frames(session_dir: str | Path, depth_dir: str | Path) -> list[Data
         rectified_image = processed / "rgb" / f"{frame.frame_id:06d}.jpg"
         image_path = rectified_image if rectified_image.is_file() else frame.image_path
         intrinsics = np.asarray(metadata["rectified_intrinsics"], dtype=float) if metadata else frame.intrinsics
-        output.append(DatasetFrame(frame.timestamp_s, image_path, depth, confidence, frame.camera_to_world, intrinsics))
+        pose = world_from_rectified_camera(frame.camera_to_world, np.asarray(metadata["rectification_R1"])) if metadata else frame.camera_to_world
+        output.append(DatasetFrame(frame.timestamp_s, image_path, depth, confidence, pose, intrinsics))
     if not output: raise ValueError(f"no numbered .npy depth maps in {depths}")
     return output
 

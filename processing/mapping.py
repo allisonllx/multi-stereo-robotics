@@ -7,6 +7,7 @@ import numpy as np
 
 from calibration.common import require_cv2
 from processing.session import load_frames
+from processing.trajectory import world_from_rectified_camera
 
 
 def backproject_depth(depth_m: np.ndarray, intrinsics: np.ndarray, camera_to_world: np.ndarray,
@@ -50,12 +51,14 @@ def build_coloured_map(session_dir: str | Path, processed_dir: str | Path, outpu
     cv = require_cv2(); session, processed = Path(session_dir), Path(processed_dir)
     frames = load_frames(session); metadata = json.loads((processed / "stereo_metadata.json").read_text(encoding="utf-8"))
     K = np.asarray(metadata["rectified_intrinsics"], dtype=np.float64)
+    R1 = np.asarray(metadata["rectification_R1"], dtype=np.float64)
     all_points, all_colours, used = [], [], 0
     for frame in frames[::frame_stride]:
         depth_path, image_path = processed / "depth" / f"{frame.frame_id:06d}.npy", processed / "rgb" / f"{frame.frame_id:06d}.jpg"
         if not depth_path.is_file() or not image_path.is_file(): continue
         depth, image = np.load(depth_path), cv.imread(str(image_path))
-        points, pixels = backproject_depth(depth, K, frame.camera_to_world, pixel_stride, max_depth_m)
+        rectified_pose = world_from_rectified_camera(frame.camera_to_world, R1)
+        points, pixels = backproject_depth(depth, K, rectified_pose, pixel_stride, max_depth_m)
         colours = image[pixels[:, 0], pixels[:, 1], ::-1]
         all_points.append(points); all_colours.append(colours); used += 1
     if not all_points: raise ValueError("no matching rectified RGB/depth frames found")

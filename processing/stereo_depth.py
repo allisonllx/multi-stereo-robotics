@@ -118,6 +118,6 @@ def process_sequence(session_a: str | Path, session_b: str | Path, pairs_csv: st
         "frames": frame_metrics,
     }
     (output / "depth_evaluation.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    metadata = {"image_width": size[0], "image_height": size[1], "rectified_intrinsics": np.asarray(rect["P1"][:3, :3]).tolist(), "frames": frame_metrics}
+    metadata = {"image_width": size[0], "image_height": size[1], "rectified_intrinsics": np.asarray(rect["P1"][:3, :3]).tolist(), "rectification_R1": np.asarray(rect["R1"]).tolist(), "frames": frame_metrics}
     (output / "stereo_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return report
