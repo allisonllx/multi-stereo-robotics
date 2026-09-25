@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     for flag in ("session-a", "session-b", "pairs", "stereo", "output"):
         stereo.add_argument(f"--{flag}", required=True)
     stereo.add_argument("--max-pairs", type=int)
+    stereo.add_argument("--lidar-camera", choices=("auto", "A", "B", "none"), default="auto")
     trajectory = sub.add_parser("trajectory", help="Align Camera A ARKit trajectory to GPS ENU")
     trajectory.add_argument("--session", required=True); trajectory.add_argument("--output", required=True)
     trajectory.add_argument("--session-b"); trajectory.add_argument("--pairs"); trajectory.add_argument("--stereo"); trajectory.add_argument("--output-b")
@@ -36,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     for flag in ("session-a", "session-b", "pairs", "stereo", "output"):
         all_cmd.add_argument(f"--{flag}", required=True)
     all_cmd.add_argument("--max-pairs", type=int)
+    all_cmd.add_argument("--lidar-camera", choices=("auto", "A", "B", "none"), default="auto")
     return parser
 
 
@@ -68,7 +70,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "associate":
         print(f"Wrote {write_frame_sensor_associations(args.session, args.output)}")
     elif args.command == "stereo-depth":
-        report = process_sequence(args.session_a, args.session_b, args.pairs, args.stereo, args.output, args.max_pairs)
+        report = process_sequence(args.session_a, args.session_b, args.pairs, args.stereo, args.output, args.max_pairs, args.lidar_camera)
         print(json.dumps(report, indent=2))
     elif args.command == "trajectory":
         report = align_session_to_gps(args.session, args.output)
@@ -88,7 +90,7 @@ def main(argv: list[str] | None = None) -> None:
         output = Path(args.output); depth_output = output / "stereo"
         write_frame_sensor_associations(args.session_a, output / "associated_sensors_A.csv")
         write_frame_sensor_associations(args.session_b, output / "associated_sensors_B.csv")
-        process_sequence(args.session_a, args.session_b, args.pairs, args.stereo, depth_output, args.max_pairs)
+        process_sequence(args.session_a, args.session_b, args.pairs, args.stereo, depth_output, args.max_pairs, args.lidar_camera)
         align_session_to_gps(args.session_a, output / "trajectory_enu.csv")
         align_pair_trajectories(args.session_a, args.session_b, args.pairs, args.stereo, output / "trajectory_B_in_A_world.csv")
         frames = _dataset_frames(args.session_a, depth_output / "depth")

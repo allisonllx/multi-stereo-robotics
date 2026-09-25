@@ -50,3 +50,11 @@ def test_pair_frames_csv_columns():
         "residual_ms",
     ]
     assert row["residual_ms"] == pytest.approx(-10.0, abs=1e-6)
+
+
+def test_pair_frames_can_reject_stale_and_duplicate_matches():
+    timestamps_a = np.array([0.0, 0.1, 0.2])
+    timestamps_b = np.array([0.01, 0.02, 0.11, 0.50])
+    pairs = pair_frames(timestamps_a, timestamps_b, a=1.0, b=0.0, max_residual_s=0.04, unique_a=True)
+    assert [(p.frame_a, p.frame_b) for p in pairs] == [(0, 0), (1, 2)]
+    assert all(abs(p.residual_s) <= 0.04 for p in pairs)

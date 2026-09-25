@@ -42,6 +42,8 @@ def pair_frames(
     timestamps_b: np.ndarray,
     a: float,
     b: float,
+    max_residual_s: float | None = None,
+    unique_a: bool = False,
 ) -> list[FramePair]:
     """Map each B timestamp into A's timeline and take the nearest A frame.
 
@@ -57,7 +59,7 @@ def pair_frames(
     for frame_b, (t_b, t_mapped) in enumerate(zip(times_b, mapped)):
         frame_a = int(np.argmin(np.abs(times_a - t_mapped)))
         t_a = float(times_a[frame_a])
-        pairs.append(
+        pair = (
             FramePair(
                 frame_a=frame_a,
                 timestamp_a=t_a,
@@ -66,6 +68,15 @@ def pair_frames(
                 residual_s=t_a - float(t_mapped),
             )
         )
+        if max_residual_s is None or abs(pair.residual_s) <= max_residual_s:
+            pairs.append(pair)
+    if unique_a:
+        best_by_a: dict[int, FramePair] = {}
+        for pair in pairs:
+            current = best_by_a.get(pair.frame_a)
+            if current is None or abs(pair.residual_s) < abs(current.residual_s):
+                best_by_a[pair.frame_a] = pair
+        pairs = sorted(best_by_a.values(), key=lambda value: value.frame_b)
     return pairs
 
 
@@ -170,7 +181,10 @@ def main(argv: list[str] | None = None) -> None:
         times_a = extract_frame_timestamps(resolve_path(config, cameras["A"]["video"]))[:, 1]
         times_b = extract_frame_timestamps(resolve_path(config, cameras["B"]["video"]))[:, 1]
 
-    pairs = pair_frames(times_a, times_b, a=a, b=b)
+    max_residual_s = float(config.get("sync", {}).get("max_pair_residual_ms", 0)) / 1000.0
+    pairs = pair_frames(times_a, times_b, a=a, b=b,
+                        max_residual_s=max_residual_s if max_residual_s > 0 else None,
+                        unique_a=True)
     output_path = Path(args.output) if args.output else out_dir / "synchronization.csv"
     write_pairs_csv(output_path, pairs)
 

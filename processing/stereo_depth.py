@@ -51,6 +51,33 @@ def rectify_aligned_map(source: np.ndarray, map_x: np.ndarray, map_y: np.ndarray
     return cv.remap(source, scaled_x, scaled_y, mode, borderMode=cv.BORDER_CONSTANT, borderValue=0)
 
 
+def reproject_depth_to_reference(source_depth: np.ndarray, source_K: np.ndarray,
+                                 reference_from_source: np.ndarray,
+                                 reference_K: np.ndarray,
+                                 output_size: tuple[int, int]) -> np.ndarray:
+    """Z-buffer a source OpenCV depth map into a reference OpenCV camera."""
+    depth = np.asarray(source_depth, dtype=np.float64)
+    source_K, reference_K = np.asarray(source_K), np.asarray(reference_K)
+    v, u = np.mgrid[:depth.shape[0], :depth.shape[1]]
+    valid = np.isfinite(depth) & (depth > 0)
+    z = depth[valid]
+    points = np.column_stack([(u[valid] - source_K[0, 2]) * z / source_K[0, 0],
+                              (v[valid] - source_K[1, 2]) * z / source_K[1, 1], z, np.ones_like(z)])
+    target = (np.asarray(reference_from_source, dtype=np.float64) @ points.T).T[:, :3]
+    valid_target = target[:, 2] > 0
+    target = target[valid_target]
+    px = np.rint(reference_K[0, 0] * target[:, 0] / target[:, 2] + reference_K[0, 2]).astype(int)
+    py = np.rint(reference_K[1, 1] * target[:, 1] / target[:, 2] + reference_K[1, 2]).astype(int)
+    width, height = output_size
+    inside = (px >= 0) & (px < width) & (py >= 0) & (py < height)
+    px, py, z_target = px[inside], py[inside], target[inside, 2]
+    flat = np.full(width * height, np.inf, dtype=np.float64)
+    np.minimum.at(flat, py * width + px, z_target)
+    result = flat.reshape(height, width).astype(np.float32)
+    result[~np.isfinite(result)] = np.nan
+    return result
+
+
 def compute_disparity(left: np.ndarray, right: np.ndarray, num_disparities: int = 128, block_size: int = 5) -> np.ndarray:
     cv = require_cv2()
     if num_disparities <= 0 or num_disparities % 16:
@@ -70,7 +97,7 @@ def compute_disparity(left: np.ndarray, right: np.ndarray, num_disparities: int 
 
 def process_sequence(session_a: str | Path, session_b: str | Path, pairs_csv: str | Path,
                      stereo_yaml: str | Path, output_dir: str | Path,
-                     max_pairs: int | None = None) -> dict:
+                     max_pairs: int | None = None, lidar_camera: str = "auto") -> dict:
     cv = require_cv2()
     frames_a, frames_b = load_frames(session_a), load_frames(session_b)
     pairs = load_pairs_csv(pairs_csv)
@@ -84,6 +111,12 @@ def process_sequence(session_a: str | Path, session_b: str | Path, pairs_csv: st
     output = Path(output_dir); output.mkdir(parents=True, exist_ok=True)
     (output / "depth").mkdir(exist_ok=True); (output / "disparity").mkdir(exist_ok=True); (output / "rgb").mkdir(exist_ok=True)
     frame_metrics = []
+    if lidar_camera == "auto":
+        has_a = any(frame.values.get("depth_path") for frame in frames_a)
+        has_b = any(frame.values.get("depth_path") for frame in frames_b)
+        lidar_camera = "A" if has_a else "B" if has_b else "none"
+    if lidar_camera not in {"A", "B", "none"}:
+        raise ValueError("lidar_camera must be auto, A, B, or none")
     selected = pairs if max_pairs is None else pairs[:max_pairs]
     for pair in selected:
         fa, fb = frames_a[pair.frame_a], frames_b[pair.frame_b]
@@ -100,19 +133,30 @@ def process_sequence(session_a: str | Path, session_b: str | Path, pairs_csv: st
         if not cv.imwrite(str(output / "rgb" / f"{stem}.jpg"), left_r):
             raise RuntimeError(f"failed to write rectified RGB frame {stem}")
         metric = {"frame_A": pair.frame_a, "frame_B": pair.frame_b, "timestamp_s": pair.timestamp_a}
-        row = fa.values
-        if row.get("depth_path"):
-            lidar = decode_padded_buffer(Path(session_a) / row["depth_path"], int(row["depth_width"]), int(row["depth_height"]), int(row["depth_bytes_per_row"]), np.float32)
-            lidar_rect = rectify_aligned_map(lidar, rect["map1_a"], rect["map2_a"], size)
+        lidar_frame = fa if lidar_camera == "A" else fb
+        lidar_root = Path(session_a) if lidar_camera == "A" else Path(session_b)
+        row = lidar_frame.values
+        if lidar_camera != "none" and row.get("depth_path"):
+            lidar = decode_padded_buffer(lidar_root / row["depth_path"], int(row["depth_width"]), int(row["depth_height"]), int(row["depth_bytes_per_row"]), np.float32)
             confidence = None
             if row.get("confidence_path"):
-                confidence_raw = decode_padded_buffer(Path(session_a) / row["confidence_path"], int(row["confidence_width"]), int(row["confidence_height"]), int(row["confidence_bytes_per_row"]), np.uint8)
-                confidence = rectify_aligned_map(confidence_raw, rect["map1_a"], rect["map2_a"], size) == 2
+                confidence_raw = decode_padded_buffer(lidar_root / row["confidence_path"], int(row["confidence_width"]), int(row["confidence_height"]), int(row["confidence_bytes_per_row"]), np.uint8)
+                lidar = np.where(confidence_raw == 2, lidar, np.nan)
+            if lidar_camera == "A":
+                lidar_rect = rectify_aligned_map(lidar, rect["map1_a"], rect["map2_a"], size)
+            else:
+                source_K = lidar_frame.intrinsics.copy()
+                source_K[0, :] *= lidar.shape[1] / float(size[0]); source_K[1, :] *= lidar.shape[0] / float(size[1])
+                a_rect_from_b = np.eye(4); a_rect_from_b[:3, :3] = rect["R1"]
+                a_to_b = np.eye(4); a_to_b[:3, :3] = R; a_to_b[:3, 3] = np.asarray(T).reshape(3)
+                a_rect_from_b = a_rect_from_b @ np.linalg.inv(a_to_b)
+                lidar_rect = reproject_depth_to_reference(lidar, source_K, a_rect_from_b, rect["P1"][:3, :3], size)
+            confidence = np.isfinite(lidar_rect)
             metric.update(evaluate_depth(depth, lidar_rect, confidence))
         frame_metrics.append(metric)
     valid = [m for m in frame_metrics if m.get("mae_m") is not None]
     report = {
-        "pairs_processed": len(frame_metrics), "lidar_pairs_evaluated": len(valid),
+        "pairs_processed": len(frame_metrics), "lidar_pairs_evaluated": len(valid), "lidar_camera": lidar_camera,
         "mean_mae_m": None if not valid else float(np.mean([m["mae_m"] for m in valid])),
         "mean_rmse_m": None if not valid else float(np.mean([m["rmse_m"] for m in valid])),
         "frames": frame_metrics,

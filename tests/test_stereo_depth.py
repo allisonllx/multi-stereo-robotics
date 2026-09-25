@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from processing.stereo_depth import disparity_to_depth, evaluate_depth, rectify_aligned_map
+from processing.stereo_depth import disparity_to_depth, evaluate_depth, rectify_aligned_map, reproject_depth_to_reference
 
 
 def test_disparity_to_depth_uses_focal_and_baseline_and_masks_invalid():
@@ -28,3 +28,10 @@ def test_rectify_aligned_map_scales_rgb_lookup_into_low_resolution_depth():
     map_y = np.array([[0, 0], [2, 2]], dtype=np.float32)
     result = rectify_aligned_map(source, map_x, map_y, rgb_size=(4, 4))
     np.testing.assert_array_equal(result, [[1, 2], [3, 4]])
+
+
+def test_reproject_depth_identity_preserves_depth():
+    depth = np.array([[2.0, 3.0], [4.0, 5.0]], np.float32)
+    K = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], float)
+    projected = reproject_depth_to_reference(depth, K, np.eye(4), K, (2, 2))
+    np.testing.assert_allclose(projected, depth)
