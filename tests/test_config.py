@@ -18,8 +18,8 @@ def test_default_config_has_pipeline_keys():
     assert "square_length_m" in config["charuco"]
     assert "dictionary" in config["charuco"]
     assert config["chessboard"] == {
-        "inner_corners_x": 10,
-        "inner_corners_y": 7,
+        "inner_corners_x": 9,
+        "inner_corners_y": 6,
         "square_length_m": 0.0275,
     }
     assert config["sync"]["clap_window_s"] > 0
