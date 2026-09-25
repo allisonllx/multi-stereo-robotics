@@ -1,6 +1,6 @@
 # Two-phone rigid stereo calibration
 
-Synchronize two phone recordings from clap audio, then calibrate a rigidly mounted stereo pair with a printed ChArUco board.
+Synchronize two phone recordings from clap audio, then calibrate a rigidly mounted stereo pair with either a printed ChArUco board or a plain chessboard.
 
 Run every command from the **repository root**. Paths in `calibration/config.yaml` are relative to that root.
 
@@ -10,7 +10,7 @@ You need:
 
 - Python 3.10 or newer
 - [FFmpeg](https://ffmpeg.org/) (`ffmpeg` and `ffprobe` on `PATH`) for audio extraction and frame timestamps
-- OpenCV contrib (ArUco / ChArUco live there, not in plain `opencv-python`)
+- OpenCV contrib (required for ChArUco and the robust chessboard detector)
 
 ```bash
 # macOS
@@ -93,7 +93,9 @@ Lock the rig and the recording settings first:
 2. Do three clearly spaced claps
 3. Confirm both phones recorded the audio
 
-**ChArUco board.** Prefer a print on rigid foam board, not a laptop screen. Record in `calibration/config.yaml`:
+**Calibration board.** Prefer a print on rigid foam board, not a laptop screen. Set `board.type` to `charuco` or `chessboard` in `calibration/config.yaml`.
+
+For ChArUco:
 
 | Field | Meaning |
 |---|---|
@@ -101,6 +103,8 @@ Lock the rig and the recording settings first:
 | `square_length_m` | Side length of one square, metres |
 | `marker_length_m` | Side length of the ArUco marker inside a square, metres |
 | `dictionary` | Must match the print, e.g. `DICT_5X5_250` |
+
+For a plain chessboard, set `inner_corners_x`, `inner_corners_y`, and `square_length_m`. The first two are the number of **internal corner intersections**, not the number of squares. A non-square pattern such as 9×6 is recommended; keep the board orientation similar in both cameras because a markerless board cannot encode a unique physical origin.
 
 For stereo poses, hold the board still for about one second at each position. That way a one-frame sync error still sees the same geometry.
 
@@ -156,12 +160,21 @@ cameras:
     video: data/camera_B.mp4
     intrinsics_source: data/camera_B.mp4
 
+board:
+  type: charuco             # or chessboard
+
 charuco:
   squares_x: 7
   squares_y: 5
   square_length_m: 0.040
   marker_length_m: 0.030
   dictionary: DICT_5X5_250
+
+# Used only when board.type is chessboard:
+chessboard:
+  inner_corners_x: 9
+  inner_corners_y: 6
+  square_length_m: 0.040
 
 verification:
   measured_baseline_m: 0.12   # tape measure between optical centres; optional
@@ -174,7 +187,7 @@ Useful knobs:
 - `sync.clap_window_s` — first/last seconds used to find claps (default 8)
 - `sync.drift_threshold_ms` — if start vs end lag differs by more than this, fit clock-rate `a`
 - `calibration.pose_interval_s` — keep at most one stereo pose per this many seconds (hold-still sampling)
-- `calibration.min_corners` — drop frames with fewer shared ChArUco corners
+- `calibration.min_corners` — drop frames with fewer shared board corners
 
 ## Run
 
@@ -190,7 +203,7 @@ Or one step at a time:
 python -m calibration timestamps   # PTS for every frame
 python -m calibration sync         # clap cross-correlation → a, b
 python -m calibration pair         # nearest-frame pairs + clap frame numbers
-python -m calibration detect       # ChArUco corners
+python -m calibration detect       # ChArUco or plain chessboard corners
 python -m calibration intrinsics   # K and distortion per camera
 python -m calibration stereo       # R, T, E, F with intrinsics held fixed
 python -m calibration verify       # held-out diagnostics + rectified preview
@@ -214,7 +227,7 @@ Written to `calibration/outputs/` (overridable via `paths.outputs`):
 | `timestamps_A.csv`, `timestamps_B.csv` | `frame, timestamp_s` from the container PTS |
 | `time_mapping.json` | `a`, `b`, start/end lag, detected clap times |
 | `synchronization.csv` | `frame_A, timestamp_A, frame_B, timestamp_B, residual_ms` |
-| `detections_A.json`, `detections_B.json` | Per-frame ChArUco IDs and corners (stereo video) |
+| `detections_A.json`, `detections_B.json` | Per-frame board IDs and corners (stereo video) |
 | `detections_intrinsics_A.json` | Only if `intrinsics_source` is a different path |
 | `intrinsics_A.yaml`, `intrinsics_B.yaml` | Image size, `K`, distortion, RMS reprojection error |
 | `stereo_extrinsics.yaml` | `R`, `T`, `E`, `F`, baseline `‖T‖` |
@@ -227,7 +240,7 @@ Diagnostic targets, not guarantees:
 
 - Intrinsic RMS ≲ 0.5 px
 - Held-out epipolar or rectified vertical error ≲ 1 px
-- Triangulated ChArUco square length close to `square_length_m`
+- Triangulated board square length close to `square_length_m`
 - `‖T‖` close to `measured_baseline_m` if you set it
 
 ## Offline depth, trajectory, and dataset processing

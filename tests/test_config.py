@@ -5,17 +5,24 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from calibration.calibrate_intrinsics import IntrinsicsResult
-from calibration.common import load_config, load_yaml, resolve_path, save_yaml
+from calibration.common import calibration_board_from_config, load_config, load_yaml, resolve_path, save_yaml
 
 
 def test_default_config_has_pipeline_keys():
     config = load_config()
     assert set(config["cameras"]) == {"A", "B"}
+    assert config["board"]["type"] == "charuco"
     assert "square_length_m" in config["charuco"]
     assert "dictionary" in config["charuco"]
     assert config["sync"]["clap_window_s"] > 0
+
+
+def test_unknown_board_type_is_rejected():
+    with pytest.raises(ValueError, match="charuco.*chessboard"):
+        calibration_board_from_config({"board": {"type": "circles"}})
 
 
 def test_intrinsics_yaml_roundtrip(tmp_path: Path):

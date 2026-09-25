@@ -14,14 +14,15 @@ import numpy as np
 
 from calibration.common import (
     as_matrix,
-    charuco_board_from_config,
+    board_metadata,
+    calibration_board_from_config,
     load_config,
     load_yaml,
     output_dir,
     require_cv2,
     save_yaml,
 )
-from calibration.detect_charuco import load_detections
+from calibration.detect_charuco import load_detections, validate_detection_board
 from calibration.pair_frames import load_pairs_csv
 
 
@@ -74,7 +75,7 @@ def intersect_view(
     ids_b: np.ndarray,
     pts_b: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Keep ChArUco corner IDs observed in both cameras of one pair."""
+    """Keep calibration-board corner IDs observed in both cameras of one pair."""
     map_a = {int(i): pts_a[k] for k, i in enumerate(np.asarray(ids_a).reshape(-1))}
     map_b = {int(i): pts_b[k] for k, i in enumerate(np.asarray(ids_b).reshape(-1))}
     shared = sorted(set(map_a) & set(map_b))
@@ -221,13 +222,15 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
-    board = charuco_board_from_config(config)
+    board = calibration_board_from_config(config)
     out_dir = output_dir(config)
     calib_cfg = config.get("calibration", {})
 
     pairs = load_pairs_csv(Path(args.pairs) if args.pairs else out_dir / "synchronization.csv")
     det_a = load_detections(Path(args.detections_a) if args.detections_a else out_dir / "detections_A.json")
     det_b = load_detections(Path(args.detections_b) if args.detections_b else out_dir / "detections_B.json")
+    validate_detection_board(det_a, board)
+    validate_detection_board(det_b, board)
     K_a, d_a, size_a = load_intrinsics(
         Path(args.intrinsics_a) if args.intrinsics_a else out_dir / "intrinsics_A.yaml"
     )
@@ -247,6 +250,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     result = calibrate_stereo(objs, imgs_a, imgs_b, K_a, d_a, K_b, d_b, size_a)
     payload = result.to_dict()
+    payload["board"] = board_metadata(board)
     payload["pairs"] = meta
     output = Path(args.output) if args.output else out_dir / "stereo_extrinsics.yaml"
     save_yaml(output, payload)

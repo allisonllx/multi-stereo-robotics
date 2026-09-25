@@ -1,5 +1,5 @@
 # Two-phone rigid stereo calibration.
-# Edit the video paths and ChArUco geometry before running the pipeline.
+# Edit the video paths and calibration-board geometry before running the pipeline.
 #
 #   python -m calibration timestamps
 #   python -m calibration sync
@@ -25,6 +25,10 @@ recording:
     Lock resolution, FPS, lens, focus, exposure and white balance.
     Do not move either phone after extrinsic calibration.
 
+board:
+  # Supported values: charuco, chessboard
+  type: charuco
+
 charuco:
   squares_x: 7
   squares_y: 5
@@ -32,6 +36,12 @@ charuco:
   marker_length_m: 0.025875
   dictionary: DICT_6X6_50
   orientation: "origin at the top-left square when the board is viewed in landscape"
+
+# Used when board.type is chessboard. Counts are INNER corners, not squares.
+chessboard:
+  inner_corners_x: 9
+  inner_corners_y: 6
+  square_length_m: 0.0345
 
 sync:
   clap_window_s: 8.0

@@ -1,4 +1,4 @@
-"""Estimate per-camera intrinsics from ChArUco observations."""
+"""Estimate per-camera intrinsics from calibration-board observations."""
 
 from __future__ import annotations
 
@@ -13,13 +13,18 @@ if __package__ in (None, ""):
 import numpy as np
 
 from calibration.common import (
-    charuco_board_from_config,
+    board_metadata,
+    calibration_board_from_config,
     load_config,
     output_dir,
     require_cv2,
     save_yaml,
 )
-from calibration.detect_charuco import detections_to_point_lists, load_detections
+from calibration.detect_charuco import (
+    detections_to_point_lists,
+    load_detections,
+    validate_detection_board,
+)
 
 
 @dataclass
@@ -85,7 +90,7 @@ def calibrate_intrinsics(
     min_views: int = 8,
 ) -> IntrinsicsResult:
     if len(object_points) < 4:
-        raise ValueError(f"Need at least 4 ChArUco views, got {len(object_points)}")
+        raise ValueError(f"Need at least 4 calibration-board views, got {len(object_points)}")
 
     rms, K, dist, _rvecs, _tvecs, per_view = _calibrate_once(
         object_points, image_points, image_size
@@ -116,7 +121,7 @@ def calibrate_intrinsics(
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Calibrate one camera's intrinsics from ChArUco detections")
+    parser = argparse.ArgumentParser(description="Calibrate one camera's intrinsics from board detections")
     parser.add_argument("--config", default=None)
     parser.add_argument("--camera", choices=("A", "B"), default=None)
     parser.add_argument("--detections", default=None)
@@ -124,7 +129,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
-    board = charuco_board_from_config(config)
+    board = calibration_board_from_config(config)
     out_dir = output_dir(config)
     calib_cfg = config.get("calibration", {})
     cameras = ("A", "B") if args.camera is None else (args.camera,)
@@ -135,6 +140,7 @@ def main(argv: list[str] | None = None) -> None:
             dedicated = out_dir / f"detections_intrinsics_{camera}.json"
             det_path = dedicated if dedicated.exists() else out_dir / f"detections_{camera}.json"
         payload = load_detections(det_path)
+        validate_detection_board(payload, board)
         objs, imgs, _meta = detections_to_point_lists(payload, board)
         result = calibrate_intrinsics(
             objs,
@@ -144,7 +150,9 @@ def main(argv: list[str] | None = None) -> None:
             min_views=int(calib_cfg.get("min_views", 8)),
         )
         output = Path(args.output) if args.output else out_dir / f"intrinsics_{camera}.yaml"
-        save_yaml(output, result.to_dict(camera_id=camera))
+        result_payload = result.to_dict(camera_id=camera)
+        result_payload["board"] = board_metadata(board)
+        save_yaml(output, result_payload)
         print(
             f"{camera}: RMS {result.reprojection_error_px:.4f} px, "
             f"{result.n_views_used} views used, {result.n_views_rejected} rejected -> {output}"

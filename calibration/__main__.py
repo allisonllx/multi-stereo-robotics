@@ -18,7 +18,7 @@ COMMANDS = {
     "timestamps": (timestamps_main, "Extract per-frame presentation timestamps"),
     "sync": (sync_main, "Cross-correlate clap audio and fit t_A = a t_B + b"),
     "pair": (pair_main, "Pair Camera B frames to the nearest Camera A frame"),
-    "detect": (detect_main, "Detect and subpixel-refine ChArUco corners"),
+    "detect": (detect_main, "Detect and subpixel-refine calibration-board corners"),
     "intrinsics": (intrinsics_main, "Calibrate each camera independently"),
     "stereo": (stereo_main, "Calibrate stereo extrinsics with fixed intrinsics"),
     "verify": (verify_main, "Rectify and write a held-out verification report"),

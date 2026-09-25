@@ -9,12 +9,96 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from calibration.common import charuco_board_from_config
+from calibration.common import board_metadata, calibration_board_from_config, charuco_board_from_config
 from calibration.detect_charuco import (
     common_corner_ids,
+    detect_calibration_image,
     detect_charuco_image,
+    detections_to_point_lists,
     refine_corners_subpixel,
+    validate_detection_board,
 )
+
+
+def _chessboard_config() -> dict:
+    return {
+        "board": {"type": "chessboard"},
+        "chessboard": {
+            "inner_corners_x": 9,
+            "inner_corners_y": 6,
+            "square_length_m": 0.025,
+        },
+    }
+
+
+def test_chessboard_object_points_use_inner_corner_geometry():
+    board = calibration_board_from_config(_chessboard_config())
+
+    points = board.getChessboardCorners()
+
+    assert points.shape == (54, 3)
+    assert points[0].tolist() == pytest.approx([0.0, 0.0, 0.0])
+    assert points[1].tolist() == pytest.approx([0.025, 0.0, 0.0])
+    assert points[9].tolist() == pytest.approx([0.0, 0.025, 0.0])
+
+
+def test_detect_calibration_image_recovers_plain_chessboard_corners():
+    config = _chessboard_config()
+    board = calibration_board_from_config(config)
+    square_px = 80
+    squares_x = config["chessboard"]["inner_corners_x"] + 1
+    squares_y = config["chessboard"]["inner_corners_y"] + 1
+    image = np.full(((squares_y + 2) * square_px, (squares_x + 2) * square_px), 255, dtype=np.uint8)
+    for y in range(squares_y):
+        for x in range(squares_x):
+            if (x + y) % 2 == 0:
+                y0, x0 = (y + 1) * square_px, (x + 1) * square_px
+                image[y0 : y0 + square_px, x0 : x0 + square_px] = 0
+
+    detection = detect_calibration_image(image, board)
+
+    assert detection.n_corners == 54
+    assert detection.ids.tolist() == list(range(54))
+
+
+def test_chessboard_detections_convert_to_metric_calibration_points():
+    board = calibration_board_from_config(_chessboard_config())
+    payload = {
+        "frames": [{"frame": 1, "ids": [0, 1, 9], "corners": [[10, 20], [20, 20], [10, 30]]}]
+    }
+
+    objects, images, metadata = detections_to_point_lists(payload, board)
+
+    np.testing.assert_allclose(
+        objects[0], [[0.0, 0.0, 0.0], [0.025, 0.0, 0.0], [0.0, 0.025, 0.0]]
+    )
+    np.testing.assert_allclose(images[0], [[10, 20], [20, 20], [10, 30]])
+    assert metadata[0]["frame"] == 1
+
+
+def test_chessboard_metadata_records_inner_corner_convention():
+    board = calibration_board_from_config(_chessboard_config())
+
+    assert board_metadata(board) == {
+        "type": "chessboard",
+        "inner_corners_x": 9,
+        "inner_corners_y": 6,
+        "square_length_m": 0.025,
+    }
+
+
+def test_detection_board_mismatch_is_rejected_before_calibration():
+    board = calibration_board_from_config(_chessboard_config())
+    payload = {"board": {"type": "charuco"}, "frames": []}
+
+    with pytest.raises(ValueError, match="board does not match"):
+        validate_detection_board(payload, board)
+
+
+def test_legacy_detection_without_board_metadata_remains_compatible():
+    board = calibration_board_from_config(_chessboard_config())
+
+    validate_detection_board({"frames": []}, board)
 
 
 def test_image_directory_uses_numeric_filename_stem_as_frame_id(tmp_path, monkeypatch):

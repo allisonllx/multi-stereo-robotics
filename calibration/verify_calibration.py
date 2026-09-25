@@ -15,14 +15,15 @@ import numpy as np
 from calibration.calibrate_stereo import load_intrinsics, paired_charuco_observations
 from calibration.common import (
     as_matrix,
-    charuco_board_from_config,
+    board_metadata,
+    calibration_board_from_config,
     load_config,
     load_yaml,
     output_dir,
     require_cv2,
     save_yaml,
 )
-from calibration.detect_charuco import load_detections
+from calibration.detect_charuco import load_detections, validate_detection_board
 from calibration.pair_frames import load_pairs_csv
 
 
@@ -153,7 +154,7 @@ def verify(
     imgs_b: list[np.ndarray],
     meta: list[dict],
     stereo: dict,
-    charuco_cfg: dict,
+    board_cfg: dict,
     holdout_fraction: float,
     measured_baseline_m: float | None,
     intrinsic_error_a: float | None = None,
@@ -176,7 +177,7 @@ def verify(
     vert = []
     square_lengths = []
     eval_indices = hold if hold else train
-    square = float(charuco_cfg["square_length_m"])
+    square = float(board_cfg["square_length_m"])
     for i in eval_indices:
         epi.append(epipolar_distances(imgs_a[i], imgs_b[i], F))
         pts_a_r = _rectify_points(imgs_a[i], K_a, d_a, rect["R1"], rect["P1"])
@@ -211,7 +212,7 @@ def verify(
         "triangulated_square_length_std_m": None
         if square_lengths.size == 0
         else float(np.std(square_lengths)),
-        "known_square_length_m": float(charuco_cfg["square_length_m"]),
+        "known_square_length_m": float(board_cfg["square_length_m"]),
         "sync_residual_mean_abs_ms": None
         if sync_residuals_ms is None or sync_residuals_ms.size == 0
         else float(np.mean(np.abs(sync_residuals_ms))),
@@ -294,7 +295,9 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
-    board = charuco_board_from_config(config)
+    board = calibration_board_from_config(config)
+    board_type = str(config.get("board", {}).get("type", "charuco")).lower()
+    board_cfg = config[board_type]
     out_dir = output_dir(config)
     calib_cfg = config.get("calibration", {})
     verify_cfg = config.get("verification", {})
@@ -302,6 +305,8 @@ def main(argv: list[str] | None = None) -> None:
     stereo = load_yaml(out_dir / "stereo_extrinsics.yaml")
     det_a = load_detections(out_dir / "detections_A.json")
     det_b = load_detections(out_dir / "detections_B.json")
+    validate_detection_board(det_a, board)
+    validate_detection_board(det_b, board)
     pairs = load_pairs_csv(out_dir / "synchronization.csv")
     objs, imgs_a, imgs_b, meta = paired_charuco_observations(
         pairs,
@@ -324,13 +329,14 @@ def main(argv: list[str] | None = None) -> None:
         imgs_b,
         meta,
         stereo,
-        config["charuco"],
+        board_cfg,
         holdout_fraction=float(verify_cfg.get("holdout_fraction", 0.2)),
         measured_baseline_m=verify_cfg.get("measured_baseline_m"),
         intrinsic_error_a=err_a,
         intrinsic_error_b=err_b,
         sync_residuals_ms=sync_residuals,
     )
+    report["board"] = board_metadata(board)
 
     K_a, d_a, size_a = load_intrinsics(out_dir / "intrinsics_A.yaml")
     K_b, d_b, _size_b = load_intrinsics(out_dir / "intrinsics_B.yaml")

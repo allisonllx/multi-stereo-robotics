@@ -1,4 +1,4 @@
-"""Detect ChArUco corners, refine to subpixel, and dump per-frame observations."""
+"""Detect calibration-board corners and dump per-frame observations."""
 
 from __future__ import annotations
 
@@ -14,7 +14,9 @@ if __package__ in (None, ""):
 import numpy as np
 
 from calibration.common import (
-    charuco_board_from_config,
+    ChessboardSpec,
+    board_metadata,
+    calibration_board_from_config,
     charuco_detector,
     load_config,
     output_dir,
@@ -64,6 +66,31 @@ def detect_charuco_image(
     if refine:
         corners = refine_corners_subpixel(image, corners)
     return CharucoDetection(corners=corners, ids=ids)
+
+
+def detect_chessboard_image(
+    image: np.ndarray,
+    board: ChessboardSpec,
+    refine: bool = True,
+) -> CharucoDetection:
+    cv = require_cv2()
+    gray = image if image.ndim == 2 else cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+    flags = cv.CALIB_CB_NORMALIZE_IMAGE | cv.CALIB_CB_EXHAUSTIVE | cv.CALIB_CB_ACCURACY
+    found, corners = cv.findChessboardCornersSB(gray, board.pattern_size, flags=flags)
+    if not found or corners is None:
+        return CharucoDetection(
+            corners=np.zeros((0, 2), dtype=np.float32), ids=np.zeros((0,), dtype=np.int32)
+        )
+    points = np.asarray(corners, dtype=np.float32).reshape(-1, 2)
+    if refine:
+        points = refine_corners_subpixel(gray, points)
+    return CharucoDetection(corners=points, ids=np.arange(len(points), dtype=np.int32))
+
+
+def detect_calibration_image(image: np.ndarray, board, refine: bool = True) -> CharucoDetection:
+    if isinstance(board, ChessboardSpec):
+        return detect_chessboard_image(image, board, refine=refine)
+    return detect_charuco_image(image, board, refine=refine)
 
 
 def common_corner_ids(
@@ -139,7 +166,7 @@ def detect_source(
         n_seen += 1
         if image_size is None:
             image_size = (int(image.shape[1]), int(image.shape[0]))
-        detection = detect_charuco_image(image, board, refine=refine)
+        detection = detect_calibration_image(image, board, refine=refine)
         if detection.n_corners < min_corners:
             continue
         records.append(
@@ -155,6 +182,7 @@ def detect_source(
     return {
         "source": str(source),
         "source_kind": source_kind,
+        "board": board_metadata(board),
         "image_width": image_size[0],
         "image_height": image_size[1],
         "n_frames_scanned": n_seen,
@@ -171,6 +199,19 @@ def save_detections(path: str | Path, payload: dict) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def validate_detection_board(payload: dict, board) -> None:
+    """Reject stale detections made with a different configured target.
+
+    Older detection files did not include board metadata, so they remain readable.
+    """
+    recorded = payload.get("board")
+    if recorded is not None and recorded != board_metadata(board):
+        raise ValueError(
+            f"Detection board does not match current config: recorded={recorded}, "
+            f"configured={board_metadata(board)}. Run the detect step again."
+        )
 
 
 def detections_to_point_lists(payload: dict, board) -> tuple[list[np.ndarray], list[np.ndarray], list[dict]]:
@@ -190,7 +231,7 @@ def detections_to_point_lists(payload: dict, board) -> tuple[list[np.ndarray], l
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Detect ChArUco corners in a video or image folder")
+    parser = argparse.ArgumentParser(description="Detect calibration-board corners in a video or image folder")
     parser.add_argument("--config", default=None)
     parser.add_argument("--camera", choices=("A", "B"), default=None)
     parser.add_argument("--source", default=None, help="Video file or image directory")
@@ -199,7 +240,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
-    board = charuco_board_from_config(config)
+    board = calibration_board_from_config(config)
     min_corners = int(config.get("calibration", {}).get("min_corners", 8))
     stride = int(args.stride or config.get("calibration", {}).get("detect_stride", 1))
     out_dir = output_dir(config)

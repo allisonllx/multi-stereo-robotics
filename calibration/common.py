@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,27 @@ ARUCO_DICTIONARIES = {
     "DICT_7X7_1000": "DICT_7X7_1000",
     "DICT_ARUCO_ORIGINAL": "DICT_ARUCO_ORIGINAL",
 }
+
+
+@dataclass(frozen=True)
+class ChessboardSpec:
+    """Plain chessboard geometry, expressed using OpenCV inner-corner counts."""
+
+    inner_corners_x: int
+    inner_corners_y: int
+    square_length_m: float
+
+    @property
+    def pattern_size(self) -> tuple[int, int]:
+        return self.inner_corners_x, self.inner_corners_y
+
+    def getChessboardCorners(self) -> np.ndarray:
+        grid = np.zeros((self.inner_corners_x * self.inner_corners_y, 3), dtype=np.float32)
+        grid[:, :2] = np.mgrid[
+            0 : self.inner_corners_x, 0 : self.inner_corners_y
+        ].T.reshape(-1, 2)
+        grid[:, :2] *= self.square_length_m
+        return grid
 
 
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
@@ -122,6 +144,44 @@ def charuco_board_from_config(config: dict[str, Any]):
         float(board_cfg["marker_length_m"]),
         dictionary,
     )
+
+
+def calibration_board_from_config(config: dict[str, Any]):
+    board_type = str(config.get("board", {}).get("type", "charuco")).lower()
+    if board_type == "charuco":
+        return charuco_board_from_config(config)
+    if board_type != "chessboard":
+        raise ValueError("board.type must be 'charuco' or 'chessboard'")
+    board_cfg = config.get("chessboard", {})
+    try:
+        inner_x = int(board_cfg["inner_corners_x"])
+        inner_y = int(board_cfg["inner_corners_y"])
+        square_length = float(board_cfg["square_length_m"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(
+            "chessboard requires inner_corners_x, inner_corners_y, and square_length_m"
+        ) from error
+    if inner_x < 2 or inner_y < 2 or square_length <= 0:
+        raise ValueError("chessboard corner counts must be >= 2 and square_length_m must be positive")
+    return ChessboardSpec(inner_x, inner_y, square_length)
+
+
+def board_metadata(board) -> dict[str, Any]:
+    if isinstance(board, ChessboardSpec):
+        return {
+            "type": "chessboard",
+            "inner_corners_x": board.inner_corners_x,
+            "inner_corners_y": board.inner_corners_y,
+            "square_length_m": board.square_length_m,
+        }
+    size = board.getChessboardSize()
+    return {
+        "type": "charuco",
+        "squares_x": int(size[0]),
+        "squares_y": int(size[1]),
+        "square_length_m": float(board.getSquareLength()),
+        "marker_length_m": float(board.getMarkerLength()),
+    }
 
 
 def charuco_detector(board):
