@@ -35,6 +35,8 @@ struct ContentView: View {
 
             HStack(spacing: 28) {
                 StatusCell(label: "Saved", value: "\(recorder.savedFrames)")
+                StatusCell(label: "Dropped", value: "\(recorder.droppedFrames)")
+                StatusCell(label: "Failures", value: "\(recorder.writeFailures)")
                 StatusCell(label: "Target", value: "\(savedFPS) fps")
                 StatusCell(label: "Tracking", value: recorder.trackingState)
                 StatusCell(label: "LiDAR", value: recorder.hasLiDAR ? "active" : "unavailable")

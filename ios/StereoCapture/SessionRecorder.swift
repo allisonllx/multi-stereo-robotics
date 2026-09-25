@@ -5,10 +5,152 @@ import CoreLocation
 import SwiftUI
 import UIKit
 
+private struct WriterSummary {
+    let savedFrames: Int
+    let failures: Int
+}
+
+private final class FrameWriteJob: @unchecked Sendable {
+    let id: Int
+    let csvLine: String
+    let image: CVPixelBuffer
+    let depth: CVPixelBuffer?
+    let confidence: CVPixelBuffer?
+
+    init(id: Int, csvLine: String, image: CVPixelBuffer, depth: CVPixelBuffer?, confidence: CVPixelBuffer?) {
+        self.id = id
+        self.csvLine = csvLine
+        self.image = image
+        self.depth = depth
+        self.confidence = confidence
+    }
+}
+
+private final class CaptureWriter: @unchecked Sendable {
+    private let root: URL
+    private let queue = DispatchQueue(label: "stereo.capture.writer", qos: .userInitiated)
+    private let lock = NSLock()
+    private let ciContext = CIContext(options: [.cacheIntermediates: false])
+    private let framesFile: FileHandle
+    private let locationsFile: FileHandle
+    private let headingsFile: FileHandle
+    private let maxPendingFrames: Int
+    private var pendingFrames = 0
+    private var savedFrames = 0
+    private var failures = 0
+    private var isFinishing = false
+
+    init(root: URL, framesHeader: String, locationHeader: String, headingHeader: String,
+         maxPendingFrames: Int = 3) throws {
+        self.root = root
+        self.maxPendingFrames = maxPendingFrames
+        framesFile = try Self.makeCSV(root.appendingPathComponent("frames.csv"), header: framesHeader)
+        locationsFile = try Self.makeCSV(root.appendingPathComponent("location.csv"), header: locationHeader)
+        headingsFile = try Self.makeCSV(root.appendingPathComponent("heading.csv"), header: headingHeader)
+    }
+
+    func enqueue(_ job: FrameWriteJob, completion: @escaping @Sendable (WriterSummary) -> Void) -> Bool {
+        lock.lock()
+        guard !isFinishing, pendingFrames < maxPendingFrames else {
+            lock.unlock()
+            return false
+        }
+        pendingFrames += 1
+        queue.async { [self] in
+            do {
+                try write(job)
+                savedFrames += 1
+            } catch {
+                failures += 1
+            }
+            lock.lock()
+            pendingFrames -= 1
+            let summary = WriterSummary(savedFrames: savedFrames, failures: failures)
+            lock.unlock()
+            completion(summary)
+        }
+        lock.unlock()
+        return true
+    }
+
+    func enqueueLocation(_ line: String) { enqueueSensor(line, handle: locationsFile) }
+    func enqueueHeading(_ line: String) { enqueueSensor(line, handle: headingsFile) }
+
+    func finish() throws -> WriterSummary {
+        lock.lock()
+        isFinishing = true
+        lock.unlock()
+        return try queue.sync {
+            try framesFile.synchronize()
+            try locationsFile.synchronize()
+            try headingsFile.synchronize()
+            try framesFile.close()
+            try locationsFile.close()
+            try headingsFile.close()
+            return WriterSummary(savedFrames: savedFrames, failures: failures)
+        }
+    }
+
+    private func enqueueSensor(_ line: String, handle: FileHandle) {
+        lock.lock()
+        guard !isFinishing else {
+            lock.unlock()
+            return
+        }
+        queue.async { [self] in
+            do { try Self.append(line, to: handle) }
+            catch { failures += 1 }
+        }
+        lock.unlock()
+    }
+
+    private func write(_ job: FrameWriteJob) throws {
+        let stem = String(format: "%06d", job.id)
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let jpeg = ciContext.jpegRepresentation(
+                of: CIImage(cvPixelBuffer: job.image), colorSpace: colorSpace, options: [:]) else {
+            throw NSError(domain: "StereoCapture.Writer", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Could not encode frame \(job.id) as JPEG."])
+        }
+        try jpeg.write(to: root.appendingPathComponent("rgb/\(stem).jpg"), options: .atomic)
+        if let depth = job.depth {
+            try Self.writePixelBuffer(depth, to: root.appendingPathComponent("depth/\(stem).depth"))
+        }
+        if let confidence = job.confidence {
+            try Self.writePixelBuffer(confidence, to: root.appendingPathComponent("confidence/\(stem).conf"))
+        }
+        // Only publish a frame row after all of its referenced files exist.
+        try Self.append(job.csvLine, to: framesFile)
+    }
+
+    private static func makeCSV(_ url: URL, header: String) throws -> FileHandle {
+        guard FileManager.default.createFile(atPath: url.path, contents: Data((header + "\n").utf8)) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return try FileHandle(forWritingTo: url)
+    }
+
+    private static func append(_ line: String, to handle: FileHandle) throws {
+        try handle.write(contentsOf: Data((line + "\n").utf8))
+    }
+
+    private static func writePixelBuffer(_ buffer: CVPixelBuffer, to url: URL) throws {
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else {
+            throw NSError(domain: "StereoCapture.Writer", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "Pixel buffer has no readable storage."])
+        }
+        try Data(bytes: base, count: CVPixelBufferGetDataSize(buffer)).write(to: url, options: .atomic)
+    }
+}
+
 @MainActor
 final class SessionRecorder: NSObject, ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var savedFrames = 0
+    @Published private(set) var droppedFrames = 0
+    @Published private(set) var writeFailures = 0
     @Published private(set) var trackingState = "not started"
     @Published private(set) var locationStatus = "waiting"
     @Published private(set) var hasLiDAR = false
@@ -19,11 +161,8 @@ final class SessionRecorder: NSObject, ObservableObject {
     private let arSession = ARSession()
     var previewSession: ARSession { arSession }
     private let locationManager = CLLocationManager()
-    private let ciContext = CIContext(options: [.cacheIntermediates: false])
     private var sessionRoot: URL?
-    private var framesFile: FileHandle?
-    private var locationsFile: FileHandle?
-    private var headingsFile: FileHandle?
+    private var writer: CaptureWriter?
     private var audioRecorder: AVAudioRecorder?
     private var frameID = 0
     private var lastSavedTimestamp = -Double.infinity
@@ -61,25 +200,32 @@ final class SessionRecorder: NSObject, ObservableObject {
     func start(sessionID: String, role: String, savedFPS: Int) {
         guard !isRecording else { return }
         do {
+            try validatePermissions()
             self.sessionID = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
             self.role = role
             self.targetSavedFPS = [5, 10, 15].contains(savedFPS) ? savedFPS : 10
             self.saveInterval = 1.0 / Double(self.targetSavedFPS)
             let root = try makeSessionDirectory(sessionID: self.sessionID, role: role)
             sessionRoot = root
-            framesFile = try makeCSV(root.appendingPathComponent("frames.csv"), header: Self.framesHeader)
-            locationsFile = try makeCSV(root.appendingPathComponent("location.csv"), header: Self.locationHeader)
-            headingsFile = try makeCSV(root.appendingPathComponent("heading.csv"), header: Self.headingHeader)
+            writer = try CaptureWriter(root: root, framesHeader: Self.framesHeader,
+                                       locationHeader: Self.locationHeader, headingHeader: Self.headingHeader)
             try startAudio(at: root.appendingPathComponent("audio.m4a"))
 
             frameID = 0
             savedFrames = 0
+            droppedFrames = 0
+            writeFailures = 0
             lastSavedTimestamp = -.infinity
             completedSessionURL = nil
             lastError = nil
             isRecording = true
-            locationManager.startUpdatingLocation()
-            locationManager.startUpdatingHeading()
+            if Self.locationAuthorized(locationManager.authorizationStatus) {
+                locationStatus = "waiting"
+                locationManager.startUpdatingLocation()
+                locationManager.startUpdatingHeading()
+            } else {
+                locationStatus = "disabled"
+            }
 
             let configuration = ARWorldTrackingConfiguration()
             configuration.worldAlignment = .gravity
@@ -98,20 +244,42 @@ final class SessionRecorder: NSObject, ObservableObject {
     func stop() {
         guard isRecording else { return }
         isRecording = false
+        do {
+            let summary = try teardownCapture()
+            savedFrames = summary.savedFrames
+            writeFailures = summary.failures
+            guard let root = sessionRoot else { return }
+            try writeManifest(at: root)
+            completedSessionURL = root
+            statusMessage = "Saved \(savedFrames) frames; dropped \(droppedFrames); write failures \(writeFailures). Export the session before deleting the app."
+        } catch { fail(error) }
+    }
+
+    private func validatePermissions() throws {
+        var missing: [String] = []
+        if AVCaptureDevice.authorizationStatus(for: .video) != .authorized { missing.append("Camera") }
+        if AVAudioApplication.shared.recordPermission != .granted { missing.append("Microphone") }
+        guard missing.isEmpty else {
+            throw NSError(domain: "StereoCapture", code: 10, userInfo: [
+                NSLocalizedDescriptionKey: "Allow \(missing.joined(separator: ", ")) access in Settings, then try again."
+            ])
+        }
+    }
+
+    private static func locationAuthorized(_ status: CLAuthorizationStatus) -> Bool {
+        status == .authorizedAlways || status == .authorizedWhenInUse
+    }
+
+    private func teardownCapture() throws -> WriterSummary {
         arSession.pause()
         locationManager.stopUpdatingLocation()
         locationManager.stopUpdatingHeading()
         audioRecorder?.stop()
         audioRecorder = nil
-        framesFile?.closeFile(); framesFile = nil
-        locationsFile?.closeFile(); locationsFile = nil
-        headingsFile?.closeFile(); headingsFile = nil
-        guard let root = sessionRoot else { return }
-        do {
-            try writeManifest(at: root)
-            completedSessionURL = root
-            statusMessage = "Saved \(savedFrames) frames. Export the session before deleting the app."
-        } catch { fail(error) }
+        try? AVAudioSession.sharedInstance().setActive(false)
+        let activeWriter = writer
+        writer = nil
+        return try activeWriter?.finish() ?? WriterSummary(savedFrames: savedFrames, failures: writeFailures)
     }
 
     private static func preferredVideoFormat() -> ARConfiguration.VideoFormat? {
@@ -161,15 +329,6 @@ final class SessionRecorder: NSObject, ObservableObject {
         return root
     }
 
-    private func makeCSV(_ url: URL, header: String) throws -> FileHandle {
-        FileManager.default.createFile(atPath: url.path, contents: Data((header + "\n").utf8))
-        return try FileHandle(forWritingTo: url)
-    }
-
-    private func append(_ line: String, to handle: FileHandle?) {
-        try? handle?.write(contentsOf: Data((line + "\n").utf8))
-    }
-
     private func startAudio(at url: URL) throws {
         let audio = AVAudioSession.sharedInstance()
         try audio.setCategory(.record, mode: .measurement)
@@ -180,7 +339,11 @@ final class SessionRecorder: NSObject, ObservableObject {
             AVNumberOfChannelsKey: 1,
             AVEncoderBitRateKey: 128_000,
         ])
-        audioRecorder?.record()
+        audioRecorder?.prepareToRecord()
+        guard audioRecorder?.record() == true else {
+            throw NSError(domain: "StereoCapture", code: 11,
+                          userInfo: [NSLocalizedDescriptionKey: "The microphone recorder could not start."])
+        }
     }
 
     private func writeManifest(at root: URL) throws {
@@ -197,6 +360,10 @@ final class SessionRecorder: NSObject, ObservableObject {
                 "image_height": Int(resolution.height),
                 "hdr": false,
                 "lidar": hasLiDAR,
+                "gps": Self.locationAuthorized(locationManager.authorizationStatus),
+                "saved_frames": savedFrames,
+                "dropped_frames": droppedFrames,
+                "write_failures": writeFailures,
                 "manual_profile": [
                     "exposure_seconds": requestedExposureSeconds,
                     "iso": requestedISO,
@@ -217,6 +384,13 @@ final class SessionRecorder: NSObject, ObservableObject {
     }
 
     private func fail(_ error: Error) {
+        if isRecording || writer != nil {
+            isRecording = false
+            if let summary = try? teardownCapture() {
+                savedFrames = summary.savedFrames
+                writeFailures = summary.failures
+            }
+        }
         lastError = error
         statusMessage = error.localizedDescription
         isRecording = false
@@ -229,16 +403,15 @@ final class SessionRecorder: NSObject, ObservableObject {
 
 extension SessionRecorder: ARSessionDelegate {
     nonisolated func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        Task { @MainActor in
-            trackingState = Self.trackingDescription(frame.camera.trackingState)
-            guard isRecording, frame.timestamp - lastSavedTimestamp >= saveInterval,
-                  let root = sessionRoot else { return }
-            lastSavedTimestamp = frame.timestamp
-            let id = frameID
-            frameID += 1
-            savedFrames = frameID
+        Task<Void, Never> { @MainActor [weak self] in
+            guard let self else { return }
+            self.trackingState = Self.trackingDescription(frame.camera.trackingState)
+            guard self.isRecording, frame.timestamp - self.lastSavedTimestamp >= self.saveInterval,
+                  let writer = self.writer else { return }
+            self.lastSavedTimestamp = frame.timestamp
+            let id = self.frameID
             let unixTime = Date().timeIntervalSince1970
-            let audioTime = audioRecorder?.currentTime ?? 0
+            let audioTime = self.audioRecorder?.currentTime ?? 0
             let intrinsics = frame.camera.intrinsics
             let pose = frame.camera.transform
             let tracking = Self.trackingDescription(frame.camera.trackingState)
@@ -246,15 +419,39 @@ extension SessionRecorder: ARSessionDelegate {
             let depth = frame.sceneDepth?.depthMap
             let confidence = frame.sceneDepth?.confidenceMap
             let size = frame.camera.imageResolution
-            let exposureSeconds = captureDevice?.exposureDuration.seconds ?? .nan
-            let iso = captureDevice?.iso ?? .nan
-            let lensPosition = captureDevice?.lensPosition ?? .nan
-            let whiteBalance = captureDevice?.deviceWhiteBalanceGains
-            writeFrame(id: id, timestamp: audioTime, arkitTimestamp: frame.timestamp,
-                unixTime: unixTime, image: image,
-                depth: depth, confidence: confidence, intrinsics: intrinsics, pose: pose,
-                size: size, tracking: tracking, exposureSeconds: exposureSeconds, iso: iso,
-                lensPosition: lensPosition, whiteBalance: whiteBalance, root: root)
+            let exposureSeconds = self.captureDevice?.exposureDuration.seconds ?? .nan
+            let iso = self.captureDevice?.iso ?? .nan
+            let lensPosition = self.captureDevice?.lensPosition ?? .nan
+            let whiteBalance = self.captureDevice?.deviceWhiteBalanceGains
+            let depthShape = depth.map { [CVPixelBufferGetWidth($0), CVPixelBufferGetHeight($0), CVPixelBufferGetBytesPerRow($0)] } ?? [0, 0, 0]
+            let confidenceShape = confidence.map { [CVPixelBufferGetWidth($0), CVPixelBufferGetHeight($0), CVPixelBufferGetBytesPerRow($0)] } ?? [0, 0, 0]
+            let stem = String(format: "%06d", id)
+            let depthRelative = depth == nil ? "" : "depth/\(stem).depth"
+            let confidenceRelative = confidence == nil ? "" : "confidence/\(stem).conf"
+            let poseValues = (0..<4).flatMap { row in (0..<4).map { column in pose[column][row] } }
+            var fields: [String] = ["\(id)", "\(audioTime)", "\(frame.timestamp)", "\(unixTime)", "rgb/\(stem).jpg",
+                depthRelative, confidenceRelative,
+                "\(depthShape[0])", "\(depthShape[1])", "\(depthShape[2])",
+                "\(confidenceShape[0])", "\(confidenceShape[1])", "\(confidenceShape[2])",
+                "\(intrinsics[0][0])", "\(intrinsics[1][1])", "\(intrinsics[2][0])", "\(intrinsics[2][1])",
+                "\(Int(size.width))", "\(Int(size.height))", tracking,
+                "\(exposureSeconds)", "\(iso)", "\(lensPosition)",
+                "\(whiteBalance?.redGain ?? .nan)", "\(whiteBalance?.greenGain ?? .nan)", "\(whiteBalance?.blueGain ?? .nan)"]
+            fields.append(contentsOf: poseValues.map { String($0) })
+            let job = FrameWriteJob(id: id, csvLine: fields.joined(separator: ","), image: image,
+                                    depth: depth, confidence: confidence)
+            let accepted = writer.enqueue(job) { [weak self] summary in
+                Task<Void, Never> { @MainActor in
+                    guard let self else { return }
+                    self.savedFrames = summary.savedFrames
+                    self.writeFailures = summary.failures
+                }
+            }
+            if accepted {
+                self.frameID += 1
+            } else {
+                self.droppedFrames += 1
+            }
         }
     }
 
@@ -266,46 +463,6 @@ extension SessionRecorder: ARSessionDelegate {
         }
     }
 
-    private func writeFrame(id: Int, timestamp: Double, arkitTimestamp: Double, unixTime: Double,
-        image: CVPixelBuffer, depth: CVPixelBuffer?, confidence: CVPixelBuffer?,
-        intrinsics: simd_float3x3, pose: simd_float4x4, size: CGSize, tracking: String,
-        exposureSeconds: Double, iso: Float, lensPosition: Float,
-        whiteBalance: AVCaptureDevice.WhiteBalanceGains?, root: URL) {
-        let stem = String(format: "%06d", id)
-        let imageRelative = "rgb/\(stem).jpg"
-        let imageURL = root.appendingPathComponent(imageRelative)
-        if let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-           let jpeg = ciContext.jpegRepresentation(of: CIImage(cvPixelBuffer: image), colorSpace: colorSpace, options: [:]) {
-            try? jpeg.write(to: imageURL, options: Data.WritingOptions.atomic)
-        }
-        let depthRelative = depth == nil ? "" : "depth/\(stem).depth"
-        let confidenceRelative = confidence == nil ? "" : "confidence/\(stem).conf"
-        if let depth { Self.writePixelBuffer(depth, to: root.appendingPathComponent(depthRelative)) }
-        if let confidence { Self.writePixelBuffer(confidence, to: root.appendingPathComponent(confidenceRelative)) }
-
-        let depthShape = depth.map { [CVPixelBufferGetWidth($0), CVPixelBufferGetHeight($0), CVPixelBufferGetBytesPerRow($0)] } ?? [0, 0, 0]
-        let confidenceShape = confidence.map { [CVPixelBufferGetWidth($0), CVPixelBufferGetHeight($0), CVPixelBufferGetBytesPerRow($0)] } ?? [0, 0, 0]
-
-        let p = pose
-        let poseValues = (0..<4).flatMap { row in (0..<4).map { column in p[column][row] } }
-        var fields: [String] = ["\(id)", "\(timestamp)", "\(arkitTimestamp)", "\(unixTime)", imageRelative, depthRelative, confidenceRelative,
-            "\(depthShape[0])", "\(depthShape[1])", "\(depthShape[2])",
-            "\(confidenceShape[0])", "\(confidenceShape[1])", "\(confidenceShape[2])",
-            "\(intrinsics[0][0])", "\(intrinsics[1][1])", "\(intrinsics[2][0])", "\(intrinsics[2][1])",
-            "\(Int(size.width))", "\(Int(size.height))", tracking,
-            "\(exposureSeconds)", "\(iso)", "\(lensPosition)",
-            "\(whiteBalance?.redGain ?? .nan)", "\(whiteBalance?.greenGain ?? .nan)", "\(whiteBalance?.blueGain ?? .nan)"]
-        fields.append(contentsOf: poseValues.map { String($0) })
-        append(fields.joined(separator: ","), to: framesFile)
-    }
-
-    nonisolated private static func writePixelBuffer(_ buffer: CVPixelBuffer, to url: URL) {
-        CVPixelBufferLockBaseAddress(buffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
-        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return }
-        let data = Data(bytes: base, count: CVPixelBufferGetDataSize(buffer))
-        try? data.write(to: url, options: .atomic)
-    }
 }
 
 extension SessionRecorder: CLLocationManagerDelegate {
@@ -315,9 +472,9 @@ extension SessionRecorder: CLLocationManagerDelegate {
             guard let self else { return }
             guard isRecording else { return }
             locationStatus = String(format: "±%.0f m", value.horizontalAccuracy)
-            append([value.timestamp.timeIntervalSince1970, value.coordinate.latitude, value.coordinate.longitude,
+            writer?.enqueueLocation([value.timestamp.timeIntervalSince1970, value.coordinate.latitude, value.coordinate.longitude,
                 value.altitude, value.horizontalAccuracy, value.verticalAccuracy, value.speed, value.course]
-                .map { String($0) }.joined(separator: ","), to: locationsFile)
+                .map { String($0) }.joined(separator: ","))
         }
     }
 
@@ -325,8 +482,8 @@ extension SessionRecorder: CLLocationManagerDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
             guard isRecording else { return }
-            append([Date().timeIntervalSince1970, value.magneticHeading, value.trueHeading, value.headingAccuracy,
-                value.x, value.y, value.z].map { String($0) }.joined(separator: ","), to: headingsFile)
+            writer?.enqueueHeading([Date().timeIntervalSince1970, value.magneticHeading, value.trueHeading, value.headingAccuracy,
+                value.x, value.y, value.z].map { String($0) }.joined(separator: ","))
         }
     }
 }
