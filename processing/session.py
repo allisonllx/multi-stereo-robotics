@@ -83,7 +83,7 @@ def load_numeric_csv(path: str | Path) -> tuple[list[str], np.ndarray]:
         reader = csv.DictReader(handle)
         names = list(reader.fieldnames or [])
         data = [[float(row[name]) for name in names] for row in reader]
-    return names, np.asarray(data, dtype=np.float64)
+    return names, np.asarray(data, dtype=np.float64).reshape(-1, len(names))
 
 
 def write_frame_sensor_associations(session_dir: str | Path, output_csv: str | Path,

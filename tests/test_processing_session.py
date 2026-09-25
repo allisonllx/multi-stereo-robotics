@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from processing.session import associate_nearest, decode_padded_buffer, load_frames
+from processing.session import associate_nearest, decode_padded_buffer, load_frames, load_numeric_csv
 
 
 def test_decode_padded_float_buffer_removes_row_padding(tmp_path: Path):
@@ -38,3 +38,11 @@ def test_load_frames_parses_row_major_camera_pose(tmp_path: Path):
     assert len(frames) == 1
     np.testing.assert_allclose(frames[0].camera_to_world, pose)
     np.testing.assert_allclose(frames[0].intrinsics, [[10, 0, 5], [0, 11, 6], [0, 0, 1]])
+
+
+def test_empty_sensor_csv_retains_column_shape(tmp_path: Path):
+    path = tmp_path / "location.csv"
+    path.write_text("unix_time_s,latitude,longitude\n", encoding="utf-8")
+    names, values = load_numeric_csv(path)
+    assert names == ["unix_time_s", "latitude", "longitude"]
+    assert values.shape == (0, 3)

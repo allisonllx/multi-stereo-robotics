@@ -10,7 +10,7 @@ from processing.export_dataset import DatasetFrame, export_r3d, export_tum
 from processing.mapping import build_coloured_map
 from processing.session import decode_padded_buffer, load_frames, write_frame_sensor_associations
 from processing.stereo_depth import process_sequence
-from processing.trajectory import align_pair_trajectories, align_session_to_gps
+from processing.trajectory import align_pair_trajectories, align_session_to_gps, apply_world_transform, try_align_session_to_gps
 from processing.trajectory import world_from_rectified_camera
 
 
@@ -41,7 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _dataset_frames(session_dir: str | Path, depth_dir: str | Path) -> list[DatasetFrame]:
+def _dataset_frames(session_dir: str | Path, depth_dir: str | Path,
+                    world_transform: np.ndarray | None = None) -> list[DatasetFrame]:
     root, depths = Path(session_dir), Path(depth_dir)
     processed = depths.parent
     metadata_path = processed / "stereo_metadata.json"
@@ -60,6 +61,7 @@ def _dataset_frames(session_dir: str | Path, depth_dir: str | Path) -> list[Data
         image_path = rectified_image if rectified_image.is_file() else frame.image_path
         intrinsics = np.asarray(metadata["rectified_intrinsics"], dtype=float) if metadata else frame.intrinsics
         pose = world_from_rectified_camera(frame.camera_to_world, np.asarray(metadata["rectification_R1"])) if metadata else frame.camera_to_world
+        pose = apply_world_transform(pose, world_transform)
         output.append(DatasetFrame(frame.timestamp_s, image_path, depth, confidence, pose, intrinsics))
     if not output: raise ValueError(f"no numbered .npy depth maps in {depths}")
     return output
@@ -91,12 +93,14 @@ def main(argv: list[str] | None = None) -> None:
         write_frame_sensor_associations(args.session_a, output / "associated_sensors_A.csv")
         write_frame_sensor_associations(args.session_b, output / "associated_sensors_B.csv")
         process_sequence(args.session_a, args.session_b, args.pairs, args.stereo, depth_output, args.max_pairs, args.lidar_camera)
-        align_session_to_gps(args.session_a, output / "trajectory_enu.csv")
+        gps_report = try_align_session_to_gps(args.session_a, output / "trajectory_enu.csv")
+        world_transform = None if gps_report is None else np.asarray(gps_report["world_to_enu"], dtype=float)
+        (output / "gps_alignment.json").write_text(json.dumps({"available": gps_report is not None, "alignment": gps_report}, indent=2), encoding="utf-8")
         align_pair_trajectories(args.session_a, args.session_b, args.pairs, args.stereo, output / "trajectory_B_in_A_world.csv")
-        frames = _dataset_frames(args.session_a, depth_output / "depth")
+        frames = _dataset_frames(args.session_a, depth_output / "depth", world_transform)
         export_tum(frames, output / "tum")
         export_r3d(frames, output / "dataset.r3d")
-        build_coloured_map(args.session_a, depth_output, output / "map.ply")
+        build_coloured_map(args.session_a, depth_output, output / "map.ply", world_transform=world_transform)
         print(f"Wrote offline results to {output}")
 
 

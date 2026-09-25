@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from processing.trajectory import align_phone_worlds, camera_b_world_pose, fit_planar_rigid_alignment, geodetic_to_enu, opencv_extrinsic_to_arkit, world_from_rectified_camera
+from processing.trajectory import align_phone_worlds, apply_world_transform, camera_b_world_pose, fit_planar_rigid_alignment, geodetic_to_enu, opencv_extrinsic_to_arkit, try_align_session_to_gps, world_from_rectified_camera
 
 
 def test_camera_b_pose_uses_inverse_of_a_to_b_extrinsic():
@@ -53,3 +53,14 @@ def test_rectified_camera_pose_includes_rectification_rotation():
     result = world_from_rectified_camera(world_from_camera, rectification)
     axes = np.diag([1.0, -1.0, -1.0])
     np.testing.assert_allclose(result[:3, :3], axes @ rectification.T @ axes)
+
+
+def test_apply_world_transform_moves_camera_pose_into_enu():
+    pose = np.eye(4); pose[0, 3] = 2
+    world_to_enu = np.eye(4); world_to_enu[1, 3] = 5
+    transformed = apply_world_transform(pose, world_to_enu)
+    np.testing.assert_allclose(transformed[:3, 3], [2, 5, 0])
+
+
+def test_optional_gps_returns_none_when_location_stream_is_missing(tmp_path):
+    assert try_align_session_to_gps(tmp_path, tmp_path / "trajectory.csv") is None

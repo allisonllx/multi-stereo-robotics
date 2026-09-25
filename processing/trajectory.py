@@ -47,6 +47,10 @@ def world_from_rectified_camera(world_from_original: np.ndarray, rectification_c
     return np.asarray(world_from_original, dtype=np.float64) @ rectified_to_original_arkit
 
 
+def apply_world_transform(camera_to_world: np.ndarray, target_from_world: np.ndarray | None) -> np.ndarray:
+    return np.asarray(camera_to_world, dtype=np.float64) if target_from_world is None else np.asarray(target_from_world, dtype=np.float64) @ np.asarray(camera_to_world, dtype=np.float64)
+
+
 def align_phone_worlds(world_from_a_poses, world_from_b_poses, a_to_b: np.ndarray) -> PhoneWorldAlignment:
     if len(world_from_a_poses) != len(world_from_b_poses) or not world_from_a_poses:
         raise ValueError("paired A and B pose lists must have equal non-zero length")
@@ -113,11 +117,15 @@ def align_session_to_gps(session_dir: str | Path, output_csv: str | Path,
     if len(locations) < 2:
         raise ValueError("need at least two accurate GPS samples")
     frame_unix = np.array([float(f.values["unix_time_s"]) for f in frames])
-    association = associate_nearest(frame_unix, locations[:, column["unix_time_s"]], max_gps_age_s)
+    # Associate every low-rate GPS fix once to a frame; do not repeat fixes at RGB rate.
+    association = associate_nearest(locations[:, column["unix_time_s"]], frame_unix, max_gps_age_s)
     valid = association.indices >= 0
-    selected = locations[association.indices[valid]]
+    selected = locations[valid]
+    selected_frames = [frames[index] for index in association.indices[valid]]
     enu = geodetic_to_enu(selected[:, column["latitude"]], selected[:, column["longitude"]], selected[:, column["altitude_m"]], locations[0, column["latitude"]], locations[0, column["longitude"]], locations[0, column["altitude_m"]])
-    local = np.array([[f.camera_to_world[0, 3], -f.camera_to_world[2, 3]] for f, keep in zip(frames, valid) if keep])
+    local = np.array([[f.camera_to_world[0, 3], -f.camera_to_world[2, 3]] for f in selected_frames])
+    if np.ptp(enu[:, 0]) < 2.0 and np.ptp(enu[:, 1]) < 2.0:
+        raise ValueError("GPS samples have insufficient spatial spread for a stable alignment")
     fit = fit_planar_rigid_alignment(local, enu[:, :2])
     all_local = np.array([[f.camera_to_world[0, 3], -f.camera_to_world[2, 3]] for f in frames])
     aligned = (fit.rotation @ all_local.T).T + fit.translation
@@ -125,8 +133,22 @@ def align_session_to_gps(session_dir: str | Path, output_csv: str | Path,
     with output.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle); writer.writerow(["frame_id", "timestamp_s", "east_m", "north_m", "up_m"])
         for frame, xy in zip(frames, aligned): writer.writerow([frame.frame_id, frame.timestamp_s, xy[0], xy[1], frame.camera_to_world[1, 3]])
+    world_to_enu = np.array([
+        [fit.rotation[0, 0], 0, -fit.rotation[0, 1], fit.translation[0]],
+        [fit.rotation[1, 0], 0, -fit.rotation[1, 1], fit.translation[1]],
+        [0, 1, 0, 0], [0, 0, 0, 1],
+    ], dtype=np.float64)
     return {"frames": len(frames), "gps_matches": int(valid.sum()), "alignment_rmse_m": fit.rmse_m,
-            "rotation_2x2": fit.rotation.tolist(), "translation_en_m": fit.translation.tolist()}
+            "rotation_2x2": fit.rotation.tolist(), "translation_en_m": fit.translation.tolist(),
+            "world_to_enu": world_to_enu.tolist()}
+
+
+def try_align_session_to_gps(session_dir: str | Path, output_csv: str | Path,
+                             max_gps_age_s: float = 2.0, max_accuracy_m: float = 20.0) -> dict | None:
+    try:
+        return align_session_to_gps(session_dir, output_csv, max_gps_age_s, max_accuracy_m)
+    except (FileNotFoundError, ValueError, KeyError):
+        return None
 
 
 def align_pair_trajectories(session_a: str | Path, session_b: str | Path,
