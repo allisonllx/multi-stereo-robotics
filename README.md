@@ -172,9 +172,9 @@ charuco:
 
 # Used only when board.type is chessboard:
 chessboard:
-  inner_corners_x: 9
-  inner_corners_y: 6
-  square_length_m: 0.040
+  inner_corners_x: 10
+  inner_corners_y: 7
+  square_length_m: 0.0275  # 2.75 cm
 
 verification:
   measured_baseline_m: 0.12   # tape measure between optical centres; optional
