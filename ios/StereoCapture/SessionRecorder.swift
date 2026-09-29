@@ -171,6 +171,7 @@ final class SessionRecorder: NSObject, ObservableObject {
     private var targetSavedFPS = 10
     private var saveInterval = 0.1
     private var captureDevice: AVCaptureDevice?
+    private var lockedCameraProfile: CameraLockProfile?
     private let requestedExposureSeconds = 1.0 / 120.0
     private let requestedISO: Float = 100
     private let requestedLensPosition: Float = 0.75
@@ -218,7 +219,6 @@ final class SessionRecorder: NSObject, ObservableObject {
             lastSavedTimestamp = -.infinity
             completedSessionURL = nil
             lastError = nil
-            isRecording = true
             if Self.locationAuthorized(locationManager.authorizationStatus) {
                 locationStatus = "waiting"
                 locationManager.startUpdatingLocation()
@@ -235,6 +235,7 @@ final class SessionRecorder: NSObject, ObservableObject {
             if hasLiDAR { configuration.frameSemantics.insert(.sceneDepth) }
             arSession.run(configuration, options: [.resetTracking, .removeExistingAnchors])
             try applyManualCameraProfile()
+            isRecording = true
             statusMessage = "Recording Camera \(role) at \(targetSavedFPS) saved fps. Clap where both phones can see and hear it."
         } catch {
             fail(error)
@@ -296,6 +297,14 @@ final class SessionRecorder: NSObject, ObservableObject {
         try device.lockForConfiguration()
         defer { device.unlockForConfiguration() }
 
+        guard device.minAvailableVideoZoomFactor <= 1.0,
+              device.maxAvailableVideoZoomFactor >= 1.0 else {
+            throw NSError(domain: "StereoCapture", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "The rear wide-angle camera cannot be locked to 1× zoom."
+            ])
+        }
+        device.videoZoomFactor = 1.0
+
         if device.isExposureModeSupported(.custom) {
             let format = device.activeFormat
             let requested = requestedExposureSeconds
@@ -316,7 +325,29 @@ final class SessionRecorder: NSObject, ObservableObject {
             )
             device.setWhiteBalanceModeLocked(with: gains)
         }
+        let profile = Self.cameraLockProfile(for: device)
+        guard profile.isCalibrationSafe else {
+            throw NSError(domain: "StereoCapture", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Calibration capture requires ARKit's physical rear wide-angle camera at 1× zoom."
+            ])
+        }
         captureDevice = device
+        lockedCameraProfile = profile
+    }
+
+    private static func cameraLockProfile(for device: AVCaptureDevice) -> CameraLockProfile {
+        let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        let subtype = CMFormatDescriptionGetMediaSubType(device.activeFormat.formatDescription)
+        return CameraLockProfile(
+            uniqueID: device.uniqueID,
+            localizedName: device.localizedName,
+            deviceType: device.deviceType == .builtInWideAngleCamera ? "wide-angle" : device.deviceType.rawValue,
+            position: device.position == .back ? "back" : String(describing: device.position),
+            formatWidth: Int(dimensions.width),
+            formatHeight: Int(dimensions.height),
+            mediaSubtype: String(format: "%08x", subtype),
+            zoomFactor: Double(device.videoZoomFactor)
+        )
     }
 
     private func makeSessionDirectory(sessionID: String, role: String) throws -> URL {
@@ -364,6 +395,7 @@ final class SessionRecorder: NSObject, ObservableObject {
                 "saved_frames": savedFrames,
                 "dropped_frames": droppedFrames,
                 "write_failures": writeFailures,
+                "camera_lock": lockedCameraProfile?.manifestPayload ?? [:],
                 "manual_profile": [
                     "exposure_seconds": requestedExposureSeconds,
                     "iso": requestedISO,
@@ -408,6 +440,19 @@ extension SessionRecorder: ARSessionDelegate {
             self.trackingState = Self.trackingDescription(frame.camera.trackingState)
             guard self.isRecording, frame.timestamp - self.lastSavedTimestamp >= self.saveInterval,
                   let writer = self.writer else { return }
+            guard let device = self.captureDevice, let lockedProfile = self.lockedCameraProfile else {
+                self.fail(NSError(domain: "StereoCapture", code: 20, userInfo: [
+                    NSLocalizedDescriptionKey: "The recording stopped because no locked camera profile was available."
+                ]))
+                return
+            }
+            let currentProfile = Self.cameraLockProfile(for: device)
+            if let mismatch = currentProfile.mismatchDescription(comparedTo: lockedProfile) {
+                self.fail(NSError(domain: "StereoCapture", code: 21, userInfo: [
+                    NSLocalizedDescriptionKey: "The recording stopped to protect calibration consistency. \(mismatch)"
+                ]))
+                return
+            }
             self.lastSavedTimestamp = frame.timestamp
             let id = self.frameID
             let unixTime = Date().timeIntervalSince1970

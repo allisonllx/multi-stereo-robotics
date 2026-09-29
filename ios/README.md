@@ -111,6 +111,7 @@ Use matching settings:
 
 The recorder requests the same manual camera profile on both phones:
 
+- physical rear wide-angle camera at 1× zoom
 - 1/120-second exposure
 - ISO 100
 - 5000 K white balance
@@ -119,7 +120,9 @@ The recorder requests the same manual camera profile on both phones:
 The app records the values each phone actually achieves because different camera
 modules may clamp or interpret the same request differently. ARKit continues to
 track at its supported native video rate while the app saves RGB frames at the
-selected lower rate.
+selected lower rate. The app stores the locked camera identity and format in the
+session manifest and stops recording if the physical camera, format, or zoom
+changes, preventing an inconsistent session from being used for calibration.
 
 ### LiDAR behavior
 
