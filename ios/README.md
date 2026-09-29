@@ -5,10 +5,10 @@ RGB images, ARKit poses and intrinsics, audio, GPS, compass headings, and LiDAR
 scene depth where the device supports it. You install the same Xcode project on
 both phones and assign one phone **Camera A** and the other **Camera B**.
 
-The phones do not need to be an iPhone 15 and iPhone 17 Pro. Those are only the
-devices used during development. Use two ARKit-capable iPhones that can run
-iOS 17 or newer. Once calibrated, keep the same phones, lenses, capture profile,
-rig positions, and A/B assignments for the experiment.
+The recorder is device-neutral and supports ARKit-capable iPhones running iOS
+17 or newer. Recent Pro models with LiDAR are preferred when scene-depth capture
+is required. Once calibrated, keep the same phones, lenses, capture profile, rig
+positions, and A/B assignments for the experiment.
 
 ## What you need
 

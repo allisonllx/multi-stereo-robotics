@@ -35,9 +35,8 @@ python -m pytest tests -q
 
 The native recorder is in [`ios/StereoCapture.xcodeproj`](ios/StereoCapture.xcodeproj).
 See the complete [two-phone Xcode setup and recording guide](ios/README.md)
-before installing the app or collecting a session. The phones do not need to
-be an iPhone 17 Pro and iPhone 15; those are simply the devices used during
-development.
+before installing the app or collecting a session. The recorder is device-neutral;
+recent Pro iPhones with LiDAR are preferred when depth capture is required.
 
 Open it in Xcode, select your Personal Team in Signing & Capabilities, and run
 the same build on both phones. Use one shared session ID and assign rig roles A
