@@ -31,9 +31,14 @@ python -m calibration --help
 python -m pytest tests -q
 ```
 
-## ARKit recorder (iPhone 17 Pro + iPhone 15)
+## ARKit recorder (two iPhones)
 
 The native recorder is in [`ios/StereoCapture.xcodeproj`](ios/StereoCapture.xcodeproj).
+See the complete [two-phone Xcode setup and recording guide](ios/README.md)
+before installing the app or collecting a session. The phones do not need to
+be an iPhone 17 Pro and iPhone 15; those are simply the devices used during
+development.
+
 Open it in Xcode, select your Personal Team in Signing & Capabilities, and run
 the same build on both phones. Use one shared session ID and assign rig roles A
 and B. The app records all streams during one Start/Stop run:
